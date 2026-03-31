@@ -409,6 +409,26 @@
       (when (activity-urn? (:raw/urn raw))
         (:raw/urn raw)))))
 
+(defn extract-real-urn!
+  "Opens overflow menu, reads Embed link href for real URN, closes menu.
+   Calls (callback real-urn) or (callback nil)."
+  [post-el callback]
+  (let [menu-btn (.querySelector post-el "button[aria-label^='Open control menu']")]
+    (if menu-btn
+      (do
+        (.click menu-btn)
+        (js/setTimeout
+         (fn []
+           (let [a-items (array-seq (js/document.querySelectorAll "[role='menu'] a[role='menuitem']"))
+                 embed-link (first (filterv #(string/includes? (.-textContent %) "Embed") a-items))
+                 href (when embed-link (.getAttribute embed-link "href"))
+                 decoded (when href (js/decodeURIComponent href))
+                 urn (when decoded (second (re-find #"targetUrn=(urn:li:\w+:\d+)" decoded)))]
+             (.dispatchEvent js/document (js/KeyboardEvent. "keydown" #js {:key "Escape" :bubbles true}))
+             (callback urn)))
+         500))
+      (callback nil))))
+
 (defonce native-storage-fns
   (let [iframe (js/document.createElement "iframe")
         _ (set! (.. iframe -style -display) "none")
@@ -435,18 +455,23 @@
 (defn storage-remove! [k]
   (.call (:remove-item native-storage-fns) js/localStorage k))
 
+(defn- text-prefix [s]
+  (when (string? s)
+    (subs s 0 (min 80 (count s)))))
+
 (defn find-existing-urn
   "Find the URN of an already-hoarded post that matches the given snapshot
-   by content identity (author slug + text-preview). Uses extract-profile-slug
-   for cross-era matching (old URLs had query params, new ones don't)."
+   by content identity (author slug + text prefix). Uses extract-profile-slug
+   for cross-era matching and text-prefix for cross-context matching
+   (feed vs post page render text differently)."
   [posts urn snapshot]
   (when-not (contains? posts urn)
     (let [author-slug (extract-profile-slug (:post/author-profile-url snapshot))
-          text (:post/text-preview snapshot)]
-      (when (and author-slug text)
+          prefix (text-prefix (:post/text-preview snapshot))]
+      (when (and author-slug prefix)
         (some (fn [[existing-urn post]]
                 (when (and (= author-slug (extract-profile-slug (:post/author-profile-url post)))
-                           (= text (:post/text-preview post)))
+                           (= prefix (text-prefix (:post/text-preview post))))
                   existing-urn))
               posts)))))
 
@@ -454,29 +479,38 @@
   "Add or update a post in state. Merges engagement and preserves pin.
    Deduplicates by content identity: if a post with the same author+text
    already exists under a different URN, merges into the existing entry.
+   Prefers activity URNs over synthetic ones.
    Heals image URLs from fresh snapshot on every encounter."
   [state urn snapshot engagement-type now]
-  (let [resolved-urn (or (find-existing-urn (:squirrel/posts state) urn snapshot)
-                         urn)
-        existing (get-in state [:squirrel/posts resolved-urn])
+  (let [found-urn (find-existing-urn (:squirrel/posts state) urn snapshot)
+        [keep-urn drop-urn] (cond
+                              (nil? found-urn) [urn nil]
+                              (and (not (string/starts-with? urn "urn:li:synthetic:"))
+                                   (string/starts-with? found-urn "urn:li:synthetic:")) [urn found-urn]
+                              :else [found-urn nil])
+        existing (get-in state [:squirrel/posts keep-urn])
+        donor (when drop-urn (get-in state [:squirrel/posts drop-urn]))
+        base (or existing donor)
         fresh-images (select-keys snapshot [:post/author-avatar-url
                                             :post/author-profile-url
                                             :post/media-image-url])
-        merged (if existing
-                 (-> existing
+        merged (if base
+                 (-> base
                      (merge fresh-images)
                      (update :post/engagements (fnil conj #{}) engagement-type)
                      (assoc :post/last-engaged now))
                  (-> snapshot
                      (assoc :post/engagements #{engagement-type})
                      (assoc :post/last-engaged now)))]
-    (-> state
-        (assoc-in [:squirrel/posts resolved-urn] merged)
-        (update :squirrel/index
-                (fn [idx]
-                  (if (some #{resolved-urn} idx)
-                    idx
-                    (conj (or idx []) resolved-urn)))))))
+    (cond-> state
+      drop-urn (-> (update :squirrel/posts dissoc drop-urn)
+                   (update :squirrel/index #(vec (remove #{drop-urn} %))))
+      true (assoc-in [:squirrel/posts keep-urn] merged)
+      true (update :squirrel/index
+                   (fn [idx]
+                     (if (some #{keep-urn} idx)
+                       idx
+                       (conj (or idx []) keep-urn)))))))
 
 (defn toggle-pin [state urn]
   (update-in state [:squirrel/posts urn :post/pinned?] not))
@@ -675,6 +709,26 @@
 
 (def schedule-save! (make-debounced 3000 save-state!))
 
+(defn upgrade-synthetic-urn!
+  "If urn is synthetic, extracts real URN from post's overflow menu
+   and upgrades the hoarded entry. Uses swap! on atom (not storage-transact!)
+   to avoid race condition with debounced saves."
+  [post-el urn]
+  (when (string/starts-with? urn "urn:li:synthetic:")
+    (extract-real-urn! post-el
+                       (fn [real-urn]
+                         (when real-urn
+                           (swap! !state
+                                  (fn [state]
+                                    (if-let [post (get-in state [:squirrel/posts urn])]
+                                      (-> state
+                                          (update :squirrel/posts dissoc urn)
+                                          (assoc-in [:squirrel/posts real-urn] (assoc post :post/urn real-urn))
+                                          (update :squirrel/index #(vec (replace {urn real-urn} %))))
+                                      state)))
+                           (save-state!)
+                           (js/console.log "[epupp:squirrel] Upgraded URN:" urn "->" real-urn))))))
+
 (defn extract-click-context [target]
   (let [closest-btn (when (not= (.. target -tagName toLowerCase) "button")
                       (.closest target "button"))
@@ -708,7 +762,8 @@
                 snapshot (raw->post-snapshot raw now)]
             (swap! !state hoard-post urn snapshot engagement now)
             (schedule-save!)
-            (js/console.log "[epupp:squirrel] Engagement:" (name engagement) urn)))))
+            (js/console.log "[epupp:squirrel] Engagement:" (name engagement) urn)
+            (upgrade-synthetic-urn! post-el urn)))))
     (catch :default err
       (js/console.error "[epupp:squirrel] Engagement handler error:" err))))
 
@@ -733,7 +788,8 @@
                     snapshot (raw->post-snapshot raw now)]
                 (swap! !state hoard-post urn snapshot :engaged/commented now)
                 (schedule-save!)
-                (js/console.log "[epupp:squirrel] Engagement: commented (input)" urn)))))))
+                (js/console.log "[epupp:squirrel] Engagement: commented (input)" urn)
+                (upgrade-synthetic-urn! post-el urn)))))))
     (catch :default err
       (js/console.error "[epupp:squirrel] Comment input handler error:" err))))
 
@@ -1357,32 +1413,34 @@
   [:div {:replicant/key urn
          :style {:padding "12px" :border-bottom "1px solid #e0e0e0"
                  :background (if pinned? "#fffde7" "white")
-                 :cursor (if (string/starts-with? urn "urn:li:synthetic:") "default" "pointer")}
+                 :cursor "pointer"}
          :on {:click (fn [_e]
-                       (when-not (string/starts-with? urn "urn:li:synthetic:")
+                       (if (string/starts-with? urn "urn:li:synthetic:")
+                         (when-let [profile-url (:post/author-profile-url post)]
+                           (js/window.open profile-url "_blank"))
                          (js/window.open (str "https://www.linkedin.com/feed/update/" urn "/") "_blank")))}}
    (post-card-body post
-     [:div {:style {:display "flex" :align-items "center" :gap "4px"
-                    :white-space "nowrap" :flex-shrink "0" :margin-top "2px"}}
-      [:button {:style {:background "none" :border "none" :cursor "pointer"
-                        :font-size "14px" :padding "0" :line-height "1"
-                        :color (if pinned? "#f59e0b" "#ccc")}
-                :title (if pinned? "Unpin" "Pin")
-                :on {:click (fn [e]
-                              (.stopPropagation e)
-                              (storage-transact! toggle-pin urn))}}
-       (if pinned? "\u2605" "\u2606")]
-      [:span {:style {:font-size "11px" :color "#999" :line-height "1"}}
-       (format-relative-time last-engaged (js/Date.now))]
-      (when-not (= urn genesis-post-urn)
-        [:button {:style {:background "none" :border "none" :cursor "pointer"
-                          :color "#4c4c4c" :font-size "20px" :padding "6px"
-                          :line-height "1" :margin-left "2px"}
-                  :title "Remove from hoard"
-                  :on {:click (fn [e]
-                                (.stopPropagation e)
-                                (storage-transact! remove-post urn))}}
-         "\u00D7"])])
+                   [:div {:style {:display "flex" :align-items "center" :gap "4px"
+                                  :white-space "nowrap" :flex-shrink "0" :margin-top "2px"}}
+                    [:button {:style {:background "none" :border "none" :cursor "pointer"
+                                      :font-size "14px" :padding "0" :line-height "1"
+                                      :color (if pinned? "#f59e0b" "#ccc")}
+                              :title (if pinned? "Unpin" "Pin")
+                              :on {:click (fn [e]
+                                            (.stopPropagation e)
+                                            (storage-transact! toggle-pin urn))}}
+                     (if pinned? "\u2605" "\u2606")]
+                    [:span {:style {:font-size "11px" :color "#999" :line-height "1"}}
+                     (format-relative-time last-engaged (js/Date.now))]
+                    (when-not (= urn genesis-post-urn)
+                      [:button {:style {:background "none" :border "none" :cursor "pointer"
+                                        :color "#4c4c4c" :font-size "20px" :padding "6px"
+                                        :line-height "1" :margin-left "2px"}
+                                :title "Remove from hoard"
+                                :on {:click (fn [e]
+                                              (.stopPropagation e)
+                                              (storage-transact! remove-post urn))}}
+                       "\u00D7"])])
    [:div {:style {:display "flex" :gap "4px" :flex-wrap "wrap"}}
     (when media-type
       [:span {:style {:background "#e3f2fd" :color "#1565c0" :padding "2px 6px"
