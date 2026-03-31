@@ -1450,9 +1450,7 @@
          label])]
      ;; Post count
      [:div {:style {:padding "4px 16px" :font-size "11px" :color "#666"}}
-      [:span (str (count current-posts) " matching posts"
-                  (when (seq stale-posts)
-                    (str " + " (count stale-posts) " stale")))]]
+      [:span (str (+ (count current-posts) (count stale-posts)) " matching posts")]]
      ;; Post list
      [:div {:style {:flex "1" :overflow-y "auto" :overscroll-behavior "contain"}}
       (if (seq sorted)
