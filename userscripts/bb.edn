@@ -7,21 +7,21 @@
              [sync])
 
   ls {:doc "List scripts in Epupp"
-      :task (sync/ls (cli/parse-args *command-line-args*
+      :task (sync/ls (sync/parse-cli *command-line-args*
                                      {:coerce {:port :int}}))}
 
   download {:doc "Download scripts from Epupp"
-            :task (sync/download (cli/parse-args *command-line-args*
+            :task (sync/download (sync/parse-cli *command-line-args*
                                                  {:coerce {:port :int
                                                            :force :boolean
                                                            :dry-run :boolean}}))}
 
   upload {:doc "Upload scripts to Epupp"
-          :task (sync/upload (cli/parse-args *command-line-args*
+          :task (sync/upload (sync/parse-cli *command-line-args*
                                              {:coerce {:port :int
                                                        :force :boolean
                                                        :dry-run :boolean}}))}
 
   diff {:doc "Diff local vs Epupp scripts"
-        :task (sync/diff-cmd (cli/parse-args *command-line-args*
+        :task (sync/diff-cmd (sync/parse-cli *command-line-args*
                                              {:coerce {:port :int}}))}}}

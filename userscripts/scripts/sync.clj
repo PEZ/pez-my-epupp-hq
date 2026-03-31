@@ -1,9 +1,35 @@
 (ns sync
-  (:require [babashka.nrepl-client :as nrepl]
+  (:require [babashka.cli :as cli]
+            [babashka.nrepl-client :as nrepl]
             [babashka.fs :as fs]
             [babashka.process :as process]
             [clojure.edn :as edn]
             [clojure.string :as str]))
+
+(defn parse-cli
+  "Parse CLI args allowing flags in any position (before or after positional args).
+   babashka.cli/parse-args stops parsing opts after the first positional arg,
+   so we partition into flags (with their values) and positional args, then
+   recombine with flags first."
+  [args cli-opts]
+  (let [coercions (:coerce cli-opts)
+        bool-flags (set (map (fn [[k _]] (str "--" (name k)))
+                             (filter (fn [[_ v]] (= v :boolean)) coercions)))
+        valued-flags (set (map (fn [[k _]] (str "--" (name k)))
+                               (filter (fn [[_ v]] (not= v :boolean)) coercions)))]
+    (loop [remaining args flags [] positional []]
+      (if (empty? remaining)
+        (cli/parse-args (concat flags positional) cli-opts)
+        (let [[arg & more] remaining]
+          (cond
+            (bool-flags arg)
+            (recur more (conj flags arg) positional)
+
+            (valued-flags arg)
+            (recur (rest more) (conj flags arg (first more)) positional)
+
+            :else
+            (recur more flags (conj positional arg))))))))
 
 ;; --- Core nREPL Communication ---
 
