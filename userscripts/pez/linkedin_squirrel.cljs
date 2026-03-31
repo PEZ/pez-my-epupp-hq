@@ -883,10 +883,11 @@
           btn (.createElement owner-doc "button")
           pinned? (get-in @!state [:squirrel/posts urn :post/pinned?])]
       (when target-container
-        (.setAttribute btn "data-epupp-pin" urn)
-        (set! (.. btn -style -cssText)
-              "background: none; border: none; cursor: pointer; padding: 0; font-size: 16px; line-height: 1; color: #666; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; width: 32px; height: 32px; margin-top: 8px;")
-        (set! (.-textContent btn) (if pinned? "\u2605" "\u2606"))
+        (let [sibling-margin (.. (js/getComputedStyle overflow-btn) -marginTop)]
+          (.setAttribute btn "data-epupp-pin" urn)
+          (set! (.. btn -style -cssText)
+                (str "background: none; border: none; cursor: pointer; padding: 0; font-size: 16px; line-height: 1; color: #666; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; width: 32px; height: 32px; margin-top: " sibling-margin ";"))
+          (set! (.-textContent btn) (if pinned? "\u2605" "\u2606")))
         (when pinned? (set! (.. btn -style -color) "#f59e0b"))
         (.addEventListener btn "mouseenter"
                            (fn [_] (set! (.. btn -style -background) "rgba(0,0,0,0.08)")))
