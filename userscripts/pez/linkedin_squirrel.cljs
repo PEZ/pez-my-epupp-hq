@@ -4,12 +4,10 @@
  :epupp/run-at "document-idle"
  :epupp/inject ["scittle://replicant.js"]}
 
-
 (ns pez.linkedin-squirrel
   (:require [clojure.edn]
             [clojure.string :as string]
             [replicant.dom :as r]))
-
 
 (defonce !state
   (atom {:squirrel/posts   {}
@@ -20,9 +18,7 @@
          :ui/filter-media nil
          :nav/seen-urns   #{}}))
 
-
 (defonce !resources (atom {}))
-
 
 (defn ensure-panel-container! []
   (let [existing (:resource/panel-container @!resources)]
@@ -33,9 +29,7 @@
                         (->> (.appendChild js/document.body)))]
         (swap! !resources assoc :resource/panel-container container)))))
 
-
 (ensure-panel-container!)
-
 
 (defn epupp-icon
   [& {:keys [size] :or {size 36}}]
@@ -55,7 +49,6 @@
       {:d
        "M34.9792 36.9613L75.3818 0.999997L15.0206 37.2308L44.6048 50.8483L23.4278 84.9488L85.5 67.5L48.8818 66L55.9177 47.6053L34.9792 36.9613Z"
        :fill accent-color}]]))
-
 
 (defn epupp-header [& {:keys [size title tagline]
                        :or {size 36
@@ -78,7 +71,6 @@
                         :margin-left "4px"}}
          tagline])]]))
 
-
 (def selectors ; Selector Registry
   {:sel/feed-container    ["[data-testid='mainFeed']" "main"]
    :sel/post-container    ["[role='listitem']"]
@@ -92,7 +84,6 @@
    :sel/nav-items         ["header nav ul > li"]
    :sel/user-avatar       ["header nav ul li:last-child img"]})
 
-
 (def engagement-labels
   {:engaged/liked "Liked"
    :engaged/commented "Commented"
@@ -105,9 +96,7 @@
    :engaged/viewed "Viewed"
    :engaged/genesis "Genesis"})
 
-
 (def genesis-post-urn "urn:li:activity:7434911786253832192")
-
 
 (def media-labels
   {:media/text "Text"
@@ -119,7 +108,6 @@
    :media/poll "Poll"
    :media/celebration "Celebration"})
 
-
 (def media-filter-labels
   "Filter groups for the UI. :other covers document, carousel, poll, celebration, etc."
   [[:media/text "Text"]
@@ -128,10 +116,8 @@
    [:media/article "Article"]
    [:media/other "Other"]])
 
-
 (def other-media-types
   #{:media/document :media/carousel :media/poll :media/celebration})
-
 
 (defn q
   "Query for first matching element using selector fallback chain."
@@ -146,7 +132,6 @@
             (if result
               result
               (recur more (inc idx)))))))))
-
 
 (defn qa
   "Query for all matching elements using selector fallback chain.
@@ -166,34 +151,28 @@
                 result)
               (recur more (inc idx)))))))))
 
-
 (defn- preload-iframe-doc []
   (try
     (some-> (js/document.querySelector "iframe[src='/preload/']")
             .-contentDocument)
     (catch :default _ nil)))
 
-
 (defn q-doc [sel-key]
   (or (q js/document sel-key)
       (some-> (preload-iframe-doc) (q sel-key))))
-
 
 (defn qa-doc [sel-key]
   (let [main (qa js/document sel-key)
         iframe (some-> (preload-iframe-doc) (qa sel-key))]
     (seq (concat main iframe))))
 
-
 ;; Utility Predicates
-
 
 (defn activity-urn? [urn]
   (and (string? urn)
        (or (string/starts-with? urn "urn:li:activity:")
            (string/starts-with? urn "urn:li:share:")
            (string/starts-with? urn "urn:li:synthetic:"))))
-
 
 (defn- string-hash [s]
   (reduce (fn [hash ch]
@@ -202,14 +181,12 @@
           0
           s))
 
-
 (defn- generate-synthetic-urn [profile-url text]
   (when (and profile-url text)
     (let [slug (second (re-find #"/in/([^/?#]+)" profile-url))
           text-start (subs text 0 (min 100 (count text)))
           hash-input (str slug "|" text-start)]
       (str "urn:li:synthetic:" (string-hash hash-input)))))
-
 
 (defn extract-urn-from-element
   "Extract a post URN from an element. Since LinkedIn no longer embeds URNs
@@ -224,22 +201,11 @@
         (when-let [tc (.-textContent el)]
           (str "urn:li:synthetic:" (string-hash (subs tc 0 (min 200 (count tc)))))))))
 
-
 (defn find-post-container
   "Find the containing post element from a target element.
    Uses role='listitem' which LinkedIn uses for feed posts."
   [el]
   (.closest el "[role='listitem']"))
-
-
-(defn extract-author-from-control-menu
-  "Extract author name from the control menu aria-label as fallback.
-   Pattern: 'Open control menu for post by Author Name'"
-  [container]
-  (when-let [menu (.querySelector container "button[aria-label^='Open control menu']")]
-    (when-let [label (.getAttribute menu "aria-label")]
-      (second (re-find #"post by (.+)$" label)))))
-
 
 (defn selector-health-check! []
   (let [results (into {}
@@ -252,9 +218,7 @@
       (js/console.warn "  Missing:" (count missing) (pr-str (mapv key missing))))
     results))
 
-
 ;; Scraping Boundary (impure — only place touching DOM for post data)
-
 
 (defn find-author-info-link
   "Find the profile link containing the actual post author's info text.
@@ -278,7 +242,6 @@
     {:info-link info-link
      :author-name-from-ctrl author-name}))
 
-
 (defn find-author-avatar-link
   "Find the profile link containing the avatar image (figure inside).
    For reshares, matches the avatar belonging to the actual author."
@@ -297,7 +260,6 @@
             all-profile-links)
       (some (fn [a] (when (.querySelector a "figure") a))
             all-profile-links))))
-
 
 (defn extract-author-info-from-link
   "Extract author name, headline, and timestamp from the info link's structure.
@@ -374,9 +336,7 @@
      :raw/has-reshare? false
      :raw/reshare-post nil}))
 
-
 ;; Pure Transforms (testable without DOM)
-
 
 (defn text-preview [raw-text]
   (when raw-text
@@ -384,7 +344,6 @@
       (if (> (count trimmed) 500)
         (str (subs trimmed 0 500) "\u2026")
         trimmed))))
-
 
 (defn detect-media-type [{:keys [raw/has-article? raw/has-video? raw/has-document?
                                  raw/has-carousel? raw/has-poll? raw/has-celebration?
@@ -398,7 +357,6 @@
     has-celebration? :media/celebration
     has-image?       :media/image
     :else            :media/text))
-
 
 (defn raw->post-snapshot [raw-data now]
   (let [media-type (detect-media-type raw-data)]
@@ -428,17 +386,10 @@
       (:raw/reshare-post raw-data)
       (assoc :post/reshared-post (raw->post-snapshot (:raw/reshare-post raw-data) now)))))
 
-
-(defn promoted-post? [{:keys [raw/urn raw/timestamp-text]}]
-  (or (not (activity-urn? urn))
-      (some? (when timestamp-text (re-find #"(?i)promot" timestamp-text)))))
-
-
 (defn extract-profile-slug [url]
   (some-> url
           (as-> u (second (re-find #"/in/([^/?#]+)" u)))
           string/lower-case))
-
 
 (defn own-post? [current-user-slug raw-data]
   (let [author-slug (extract-profile-slug (:raw/author-profile-url raw-data))]
@@ -446,14 +397,11 @@
          (some? author-slug)
          (= current-user-slug author-slug))))
 
-
 (defn find-post-urn [el]
   (when-let [post-el (find-post-container el)]
     (let [raw (scrape-post-element post-el)]
-      (when (and (activity-urn? (:raw/urn raw))
-                 (not (promoted-post? raw)))
+      (when (activity-urn? (:raw/urn raw))
         (:raw/urn raw)))))
-
 
 (defonce native-storage-fns
   (let [iframe (js/document.createElement "iframe")
@@ -468,23 +416,18 @@
      :get-item get-item
      :remove-item remove-item}))
 
-
 (def storage-key "epupp:linkedin-squirrel/posts")
 (def post-cap 500)
 (def prune-batch 50)
 
-
 (defn storage-set! [k v]
   (.call (:set-item native-storage-fns) js/localStorage k v))
-
 
 (defn storage-get [k]
   (.call (:get-item native-storage-fns) js/localStorage k))
 
-
 (defn storage-remove! [k]
   (.call (:remove-item native-storage-fns) js/localStorage k))
-
 
 (defn find-existing-urn
   "Find the URN of an already-hoarded post that matches the given snapshot
@@ -500,7 +443,6 @@
                            (= text (:post/text-preview post)))
                   existing-urn))
               posts)))))
-
 
 (defn hoard-post
   "Add or update a post in state. Merges engagement and preserves pin.
@@ -525,16 +467,13 @@
                     idx
                     (conj (or idx []) resolved-urn)))))))
 
-
 (defn toggle-pin [state urn]
   (update-in state [:squirrel/posts urn :post/pinned?] not))
-
 
 (defn remove-post [state urn]
   (-> state
       (update :squirrel/posts dissoc urn)
       (update :squirrel/index #(vec (remove #{urn} %)))))
-
 
 (defn hoard-own-post
   "Hoard a post authored by the current user.
@@ -551,11 +490,9 @@
       (contains? (:post/engagements existing) :engaged/posted)
       state
 
-
       ;; Hoarded but missing :engaged/posted - add engagement only
       existing
       (update-in state [:squirrel/posts resolved-urn :post/engagements] conj :engaged/posted)
-
 
       ;; Not hoarded - create new entry
       :else
@@ -564,7 +501,6 @@
                     (-> snapshot
                         (assoc :post/engagements #{:engaged/posted})))
           (update :squirrel/index conj resolved-urn)))))
-
 
 (defn prune-posts
   "Remove oldest unpinned posts when over capacity."
@@ -582,7 +518,6 @@
             (update :squirrel/posts #(apply dissoc % unpinned-oldest))
             (update :squirrel/index #(vec (remove remove-set %))))))))
 
-
 (defn make-debounced [delay-ms f]
   (let [!timeout (atom nil)]
     (fn [& args]
@@ -590,7 +525,6 @@
         (js/clearTimeout t))
       (reset! !timeout
               (js/setTimeout #(apply f args) delay-ms)))))
-
 
 (defn- attach-listener!
   [target event resource-key handler-fn opts]
@@ -600,14 +534,12 @@
     (swap! !resources assoc resource-key handler-fn)
     (.addEventListener target event handler-fn capture?)))
 
-
 (defn- detach-listener!
   [target event resource-key opts]
   (let [{:keys [capture?] :or {capture? false}} opts]
     (when-let [handler (resource-key @!resources)]
       (.removeEventListener target event handler capture?)
       (swap! !resources assoc resource-key nil))))
-
 
 (defn merge-post
   "Merge two versions of the same post. Unions engagements, keeps max
@@ -617,7 +549,6 @@
       (update :post/engagements into (:post/engagements a))
       (update :post/engagements into (:post/engagements b))
       (assoc :post/pinned? (or (:post/pinned? a) (:post/pinned? b)))))
-
 
 (defn upsert-posts
   "Upsert in-memory posts into storage state. Additive only: never removes
@@ -638,7 +569,6 @@
     {:squirrel/posts updated-posts
      :squirrel/index (into storage-index new-urns)}))
 
-
 (defn read-persisted-state []
   (when-let [raw (storage-get storage-key)]
     (try
@@ -647,14 +577,12 @@
          :squirrel/index (or index [])})
       (catch :default _ nil))))
 
-
 (defn write-state!
   "Low-level: write the given posts state to storage and sync back to atom."
   [{:keys [squirrel/posts squirrel/index] :as state}]
   (storage-set! storage-key (pr-str {:posts posts :index index}))
   (swap! !state assoc :squirrel/posts posts :squirrel/index index)
   state)
-
 
 (defn storage-transact!
   "Read storage, apply f to it, write back, sync atom. For immediate
@@ -664,7 +592,6 @@
                       {:squirrel/posts {} :squirrel/index []})
         updated (apply f persisted args)]
     (write-state! updated)))
-
 
 (defn ensure-genesis-post!
   "Ensure the genesis post exists in the hoard with :engaged/genesis."
@@ -694,7 +621,6 @@
                (update :squirrel/index
                        (fn [idx] (conj (or idx []) urn))))))))))
 
-
 (defn save-state!
   "Debounced save: upserts in-memory posts into storage. Additive only —
    never removes posts from storage. Deletions go through storage-transact!."
@@ -707,7 +633,6 @@
         merged (upsert-posts persisted in-memory)]
     (write-state! merged)
     (js/console.log "[epupp:squirrel] Saved" (count (:squirrel/posts merged)) "posts")))
-
 
 (defn load-state! []
   (let [from-new (storage-get storage-key)
@@ -727,9 +652,7 @@
         (catch :default e
           (js/console.error "[epupp:squirrel] Failed to load state:" e))))))
 
-
 (def schedule-save! (make-debounced 3000 save-state!))
-
 
 (defn extract-click-context [target]
   (let [closest-btn (when (not= (.. target -tagName toLowerCase) "button")
@@ -737,7 +660,6 @@
         resolved (or closest-btn target)]
     {:btn-aria (or (some-> resolved (.getAttribute "aria-label")) "")
      :text (string/trim (or (.-textContent resolved) ""))}))
-
 
 (def click-patterns
   [{:source :btn-aria :pattern #"(?i)react"    :engagement :engaged/liked}
@@ -748,13 +670,11 @@
    {:source :text     :pattern #"(?i)view larger image" :engagement :engaged/viewed}
    {:source :btn-aria :pattern #"(?i)navigate to" :engagement :engaged/viewed}])
 
-
 (defn interpret-click [click-context]
   (some (fn [{:keys [source pattern engagement]}]
           (when (re-find pattern (get click-context source ""))
             engagement))
         click-patterns))
-
 
 (defn handle-engagement! [e]
   (try
@@ -771,14 +691,11 @@
     (catch :default err
       (js/console.error "[epupp:squirrel] Engagement handler error:" err))))
 
-
 (defn attach-engagement-listener! []
   (attach-listener! js/document.body "click" :resource/engagement-handler handle-engagement! {:capture? true}))
 
-
 (defn detach-engagement-listener! []
   (detach-listener! js/document.body "click" :resource/engagement-handler {:capture? true}))
-
 
 (defn handle-comment-input! [e]
   (try
@@ -788,7 +705,6 @@
           (let [raw (scrape-post-element post-el)
                 urn (:raw/urn raw)]
             (when (and (activity-urn? urn)
-                       (not (promoted-post? raw))
                        (not (contains?
                              (get-in @!state [:squirrel/posts urn :post/engagements])
                              :engaged/commented)))
@@ -800,16 +716,13 @@
     (catch :default err
       (js/console.error "[epupp:squirrel] Comment input handler error:" err))))
 
-
 (defn attach-comment-input-listener! []
   (attach-listener! js/document.body "input" :resource/comment-input-handler
                     handle-comment-input! {:capture? true}))
 
-
 (defn detach-comment-input-listener! []
   (detach-listener! js/document.body "input" :resource/comment-input-handler
                     {:capture? true}))
-
 
 (defn- attach-iframe-engagement-listener! [iframe-body]
   (when-let [old (:resource/iframe-engagement-handler @!resources)]
@@ -819,12 +732,10 @@
     (swap! !resources assoc :resource/iframe-engagement-handler
            #js {:target iframe-body :handler handler})))
 
-
 (defn- detach-iframe-engagement-listener! []
   (when-let [old (:resource/iframe-engagement-handler @!resources)]
     (.removeEventListener (.-target old) "click" (.-handler old) true)
     (swap! !resources assoc :resource/iframe-engagement-handler nil)))
-
 
 (defn initials [author-name]
   (when author-name
@@ -833,13 +744,11 @@
          (map #(subs % 0 1))
          (string/join ""))))
 
-
 (defn extract-domain [url]
   (when (and url (string? url))
     (try
       (.-hostname (js/URL. url))
       (catch :default _ nil))))
-
 
 (defn media-thumbnail [{:keys [post/media-type post/media-image-url post/document-title]}]
   (case media-type
@@ -898,7 +807,6 @@
      [:span {:style {:font-size "18px" :color "#666"}} "\uD83D\uDCCA Poll"]]
     nil))
 
-
 (defn article-mini-card [{:keys [post/article-title post/article-url
                                  post/article-image-url post/media-image-url]}]
   (let [domain (extract-domain article-url)
@@ -919,7 +827,6 @@
       (when domain
         [:div {:style {:font-size "10px" :color "#999" :margin-top "2px"}}
          domain])]]))
-
 
 (defn nav-button-view [{:keys [post-count open?]}]
   [:li.global-nav__primary-item {:id "epupp-squirrel-nav-btn"
@@ -944,14 +851,12 @@
                      :border-right "5px solid transparent"
                      :border-top "6px solid currentColor"}}]]]])
 
-
 (defn- find-me-nav-item [nav-list]
   (some (fn [item]
           (when (or (q item :sel/user-avatar)
                     (re-find #"(?i)^\s*Me\s*$" (.-textContent item)))
             item))
         (qa nav-list :sel/nav-items)))
-
 
 (defn ensure-nav-button! []
   (when-let [nav-list (q-doc :sel/nav-items-list)]
@@ -969,7 +874,6 @@
       (r/render mount-el
                 (nav-button-view {:post-count (count (:squirrel/posts @!state))
                                   :open? (:ui/panel-open? @!state)})))))
-
 
 (defn inject-pin-button! [post-el urn]
   (when-not (.querySelector post-el "[data-epupp-pin]")
@@ -1005,7 +909,6 @@
                                  (set! (.. btn -style -color) (if now-pinned? "#f59e0b" "#666"))))))
         (.insertBefore target-container btn overflow-btn)))))
 
-
 (defn detect-current-user-slug! []
   (when-not (:nav/current-user-slug @!state)
     (let [me-img (some-> (js/document.querySelector "header nav ul li:last-child img")
@@ -1025,11 +928,9 @@
         (js/console.log "[epupp:squirrel] Current user detected:" slug)
         slug))))
 
-
 (defn scan-post! [post-el]
   (let [raw (scrape-post-element post-el)]
     (when (and (activity-urn? (:raw/urn raw))
-               (not (promoted-post? raw))
                (not ((:nav/seen-urns @!state) (:raw/urn raw))))
       (let [urn (:raw/urn raw)]
         (swap! !state update :nav/seen-urns conj urn)
@@ -1042,18 +943,14 @@
               (schedule-save!)
               (js/console.log "[epupp:squirrel] Own post detected:" urn))))))))
 
-
 (defn scan-visible-posts! []
   (doseq [post-el (qa-doc :sel/post-container)]
     (scan-post! post-el)))
 
-
 (def single-post-url-pattern #"/feed/update/(urn:li:activity:\d+)")
-
 
 (defn on-feed-page? []
   (not (re-find single-post-url-pattern (.-href js/window.location))))
-
 
 (defn hoard-visited-post!
   "When on a single-post page, hoard that post with :engaged/visited."
@@ -1062,26 +959,20 @@
     (let [urn (second match)]
       (when-let [post-el (first (qa-doc :sel/post-container))]
         (let [raw (scrape-post-element post-el)]
-          (when (and (activity-urn? (:raw/urn raw))
-                     (not (promoted-post? raw)))
+          (when (activity-urn? (:raw/urn raw))
             (let [now (.toISOString (js/Date.))
                   snapshot (raw->post-snapshot raw now)]
               (swap! !state hoard-post urn snapshot :engaged/visited now)
               (schedule-save!)
               (js/console.log "[epupp:squirrel] Visited post:" urn))))))))
 
-
 (declare process-mutations!)
-
 
 ;; ── Viewport Buffer (feed refresh protection) ────────────────────
 
-
 (def viewport-buffer-size 7)
 
-
 (defonce !viewport-buffer (atom {:seen [] :snapshots {}}))
-
 
 (defn buffer-viewport-post! [urn post-el]
   (let [raw (scrape-post-element post-el)
@@ -1099,10 +990,8 @@
                 :snapshots (-> (select-keys (or snapshots {}) kept-urns)
                                (assoc urn snapshot))})))))
 
-
 (defn reset-viewport-buffer! []
   (reset! !viewport-buffer {:seen [] :snapshots {}}))
-
 
 (defn buffer-visible-viewport-posts! []
   (when (on-feed-page?)
@@ -1114,13 +1003,11 @@
             (when (activity-urn? urn)
               (buffer-viewport-post! urn post-el))))))))
 
-
 (defn get-feed-urns []
   (set (keep (fn [post-el]
                (let [raw (scrape-post-element post-el)]
                  (:raw/urn raw)))
              (qa-doc :sel/post-container))))
-
 
 (defn detect-feed-refresh []
   (let [{:keys [seen]} @!viewport-buffer]
@@ -1130,7 +1017,6 @@
         (when (seq vanished)
           vanished)))))
 
-
 (defn topmost-viewport-post-el []
   (some (fn [post]
           (let [rect (.getBoundingClientRect post)]
@@ -1138,7 +1024,6 @@
                        (<= (.-top rect) (.-innerHeight js/window)))
               post)))
         (qa-doc :sel/post-container)))
-
 
 (defn post-card-body
   "Shared hiccup for post cards. Returns a list (Replicant fragment).
@@ -1201,7 +1086,6 @@
        (when (= media-type :media/article)
          (article-mini-card post))))))
 
-
 (defn vanished-post-card [{:post/keys [urn media-type] :as post}
                           {:keys [on-pin]}]
   (let [pinned? (get-in @!state [:squirrel/posts urn :post/pinned?])]
@@ -1234,7 +1118,6 @@
                         :border-radius "4px" :font-size "10px"}}
          (get media-labels media-type "?")])]]))
 
-
 (defn render-vanished-cards! [mount snapshots]
   (let [on-pin (fn [urn snapshot]
                  (let [now (.toISOString (js/Date.))]
@@ -1266,7 +1149,6 @@
        (for [snapshot snapshots]
          (vanished-post-card snapshot {:on-pin on-pin}))])))
 
-
 (defn vanished-button-view [{:keys [n on-click on-dismiss]}]
   [:div {:style {:padding "12px 16px"
                  :margin "8px 0"
@@ -1287,7 +1169,6 @@
              :title "Dismiss"
              :on {:click on-dismiss}}
     "\u00D7"]])
-
 
 (defn inject-vanished-button! []
   (when-not (js/document.getElementById "epupp-squirrel-vanished-mount")
@@ -1313,7 +1194,6 @@
               (.insertBefore (.-parentElement anchor) mount anchor)
               (js/console.log "[epupp:squirrel] Feed refresh detected, injected vanished-posts button"))))))))
 
-
 (defn create-viewport-observer! []
   (when-let [old (:resource/viewport-observer @!resources)]
     (.disconnect old))
@@ -1331,18 +1211,15 @@
     (js/console.log "[epupp:squirrel] Viewport observer started")
     observer))
 
-
 (defn observe-feed-posts! []
   (when-let [observer (:resource/viewport-observer @!resources)]
     (doseq [post-el (qa-doc :sel/post-container)]
       (.observe observer post-el))))
 
-
 (defn disconnect-viewport-observer! []
   (when-let [observer (:resource/viewport-observer @!resources)]
     (.disconnect observer)
     (swap! !resources assoc :resource/viewport-observer nil)))
-
 
 (defn schedule-mutation-processing! []
   (when-let [raf (:resource/mutation-raf @!resources)]
@@ -1354,7 +1231,6 @@
           (fn []
             (swap! !resources assoc :resource/mutation-timeout
                    (js/setTimeout process-mutations! 150))))))
-
 
 (defn- ensure-iframe-observers! []
   (when-let [iframe-body (some-> (preload-iframe-doc) .-body)]
@@ -1373,7 +1249,6 @@
         (attach-iframe-engagement-listener! iframe-body)
         (js/console.log "[epupp:squirrel] Attached to preload iframe")))))
 
-
 (defn process-mutations! []
   (try
     (ensure-iframe-observers!)
@@ -1386,7 +1261,6 @@
     (ensure-nav-button!)
     (catch :default err
       (js/console.error "[epupp:squirrel] Mutation processing error:" err))))
-
 
 (defn disconnect-feed-observer! []
   (when-let [observer (:resource/feed-observer @!resources)]
@@ -1404,7 +1278,6 @@
          :resource/mutation-raf nil
          :resource/mutation-timeout nil))
 
-
 (defn create-feed-observer! []
   (disconnect-feed-observer!)
   (let [observer (js/MutationObserver.
@@ -1414,7 +1287,6 @@
               #js {:childList true :subtree true})
     (swap! !resources assoc :resource/feed-observer observer)
     (js/console.log "[epupp:squirrel] Feed observer started")))
-
 
 (defn format-relative-time [iso-str now-ms]
   (let [then (.getTime (js/Date. iso-str))
@@ -1429,13 +1301,11 @@
       (= days 1) "yesterday"
       :else (str days "d ago"))))
 
-
 (defn matches-search? [post search-text]
   (let [lower (string/lower-case search-text)]
     (or (string/includes? (string/lower-case (or (:post/author-name post) "")) lower)
         (string/includes? (string/lower-case (or (:post/text-preview post) "")) lower)
         (string/includes? (string/lower-case (or (:post/author-headline post) "")) lower))))
-
 
 (defn filter-posts [posts {:keys [ui/search-text ui/filter-engagement ui/filter-media]}]
   (cond->> (vals posts)
@@ -1448,10 +1318,8 @@
                (contains? other-media-types (:post/media-type %))
                (= (:post/media-type %) filter-media)))))
 
-
 (defn sort-posts [posts]
   (reverse (sort-by :post/last-engaged posts)))
-
 
 (defn post-card [{:post/keys [urn media-type engagements pinned? last-engaged]
                   :as post}]
@@ -1497,7 +1365,6 @@
    (when (= urn genesis-post-urn)
      [:div {:style {:font-size "11px" :color "#888" :margin-top "4px"}}
       "Please visit and like/comment/share \u2764\uFE0F"])])
-
 
 (defn panel-view [state]
   (let [{:keys [squirrel/posts ui/search-text ui/filter-engagement ui/filter-media]} state
@@ -1560,13 +1427,11 @@
         [:div {:style {:padding "32px" :text-align "center" :color "#999"}}
          "No hoarded posts yet"])]]))
 
-
 (defn render-panel! []
   (let [container (:resource/panel-container @!resources)]
     (if (:ui/panel-open? @!state)
       (r/render container (panel-view @!state))
       (r/render container nil))))
-
 
 (defn attach-escape-handler! []
   (attach-listener! js/document "keydown" :resource/keydown-handler
@@ -1576,10 +1441,8 @@
                         (swap! !state assoc :ui/panel-open? false)))
                     {}))
 
-
 (defn detach-escape-handler! []
   (detach-listener! js/document "keydown" :resource/keydown-handler {}))
-
 
 (defn attach-click-outside-handler! []
   (attach-listener! js/document "click" :resource/click-outside-handler
@@ -1594,20 +1457,16 @@
                             (swap! !state assoc :ui/panel-open? false)))))
                     {}))
 
-
 (defn detach-click-outside-handler! []
   (detach-listener! js/document "click" :resource/click-outside-handler {}))
-
 
 (defn attach-beforeunload-handler! []
   (attach-listener! js/window "beforeunload" :resource/beforeunload-handler
                     (fn [_e] (save-state!))
                     {}))
 
-
 (defn detach-beforeunload-handler! []
   (detach-listener! js/window "beforeunload" :resource/beforeunload-handler {}))
-
 
 (defn poll-until-ready! []
   (let [attempts (atom 0)
@@ -1624,7 +1483,6 @@
                   (js/setTimeout tick interval-ms))))]
       (js/setTimeout tick interval-ms))))
 
-
 (defn on-navigation! []
   (let [current (.-href js/window.location)]
     (when (not= current (:nav/last-url @!state))
@@ -1635,7 +1493,6 @@
       (reset-viewport-buffer!)
       (poll-until-ready!)
       (js/setTimeout hoard-visited-post! 2000))))
-
 
 (defn start-url-polling! []
   (when-let [old (:resource/url-poll-interval @!resources)]
@@ -1649,22 +1506,18 @@
                 (on-navigation!))))
           2000)))
 
-
 (defn stop-url-polling! []
   (when-let [interval (:resource/url-poll-interval @!resources)]
     (js/clearInterval interval)
     (swap! !resources assoc :resource/url-poll-interval nil)))
-
 
 (defn attach-popstate-handler! []
   (attach-listener! js/window "popstate" :resource/popstate-handler-fn
                     (fn [_e] (on-navigation!))
                     {}))
 
-
 (defn detach-popstate-handler! []
   (detach-listener! js/window "popstate" :resource/popstate-handler-fn {}))
-
 
 (defn handle-storage-change! [e]
   (when (= (.-key e) storage-key)
@@ -1679,15 +1532,12 @@
         (catch :default err
           (js/console.error "[epupp:squirrel] Storage change error:" err))))))
 
-
 (defn attach-storage-listener! []
   (attach-listener! js/window "storage" :resource/storage-handler
                     handle-storage-change! {}))
 
-
 (defn detach-storage-listener! []
   (detach-listener! js/window "storage" :resource/storage-handler {}))
-
 
 (defn teardown! []
   (disconnect-feed-observer!)
@@ -1707,7 +1557,6 @@
   (when-let [container (:resource/panel-container @!resources)]
     (r/render container nil))
   :torn-down)
-
 
 (defn init! []
   (remove-watch !state ::panel-renderer)
@@ -1739,9 +1588,7 @@
   (js/console.log "[epupp:squirrel] Initialized")
   :initialized)
 
-
 (init!)
-
 
 (comment
   (teardown!)
