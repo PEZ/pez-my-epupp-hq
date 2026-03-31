@@ -1,0 +1,80 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Epupp REPL",
+      "type": "shell",
+      "command": "bb browser-nrepl --nrepl-port 3339 --websocket-port 3340",
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "panel": "dedicated",
+        "group": "REPLs"
+      }
+    },
+    {
+      "label": "Epupp GitHub REPL",
+      "type": "shell",
+      "command": "bb browser-nrepl --nrepl-port 11331 --websocket-port 11332",
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "panel": "dedicated",
+        "group": "REPLs"
+      }
+    },
+    {
+      "label": "Epupp Gitlab REPL",
+      "type": "shell",
+      "command": "bb browser-nrepl --nrepl-port 11333 --websocket-port 11334",
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "panel": "dedicated",
+        "group": "REPLs"
+      }
+    },
+    {
+      "label": "Epupp YouTube REPL",
+      "type": "shell",
+      "command": "bb browser-nrepl --nrepl-port 11335 --websocket-port 11336",
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "panel": "dedicated",
+        "group": "REPLs"
+      }
+    },
+    {
+      "label": "Epupp Ebay REPL",
+      "type": "shell",
+      "command": "bb browser-nrepl --nrepl-port 23398 --websocket-port 23399",
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "panel": "dedicated",
+        "group": "REPLs"
+      }
+    },
+    {
+      "label": "Start Dev Environment",
+      "dependsOn": [
+        "Epupp REPL",
+        "Epupp Gitlab REPL",
+        "Epupp YouTube REPL",
+        "Epupp Ebay REPL",
+        "Epupp GitHub REPL"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

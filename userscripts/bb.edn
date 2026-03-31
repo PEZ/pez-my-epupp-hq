@@ -1,0 +1,27 @@
+{:paths ["." "scripts"]
+ :deps {org.babashka/cli {:mvn/version "0.2.23"}
+        babashka/fs {:mvn/version "0.5.30"}
+        io.github.babashka/nrepl-client {:git/sha "19fbef2525e47d80b9278c49a545de58f48ee7cf"}}
+ :tasks
+ {:requires ([babashka.cli :as cli]
+             [sync])
+
+  ls {:doc "List scripts in Epupp"
+      :task (sync/ls (cli/parse-args *command-line-args*
+                                     {:coerce {:port :int}}))}
+
+  download {:doc "Download scripts from Epupp"
+            :task (sync/download (cli/parse-args *command-line-args*
+                                                 {:coerce {:port :int
+                                                           :force :boolean
+                                                           :dry-run :boolean}}))}
+
+  upload {:doc "Upload scripts to Epupp"
+          :task (sync/upload (cli/parse-args *command-line-args*
+                                             {:coerce {:port :int
+                                                       :force :boolean
+                                                       :dry-run :boolean}}))}
+
+  diff {:doc "Diff local vs Epupp scripts"
+        :task (sync/diff-cmd (cli/parse-args *command-line-args*
+                                             {:coerce {:port :int}}))}}}

@@ -1,0 +1,19 @@
+{:paths ["." "bb"]
+ :deps {io.github.babashka/sci.nrepl {#_#_:mvn/version "0.0.2"
+                                      :git/url "https://github.com/babashka/sci.nrepl"
+                                      :git/sha "80ec956af5e6610b040089ba62eecb5d223e9e76"}
+        org.babashka/cli {:mvn/version "0.2.23"}
+        org.babashka/http-server {:mvn/version "0.1.14"}
+        babashka/fs {:mvn/version "0.5.30"}
+        io.github.babashka/nrepl-client {:git/sha "19fbef2525e47d80b9278c49a545de58f48ee7cf"}}
+ :tasks
+ {:requires ([babashka.cli :as cli]
+             [tasks])
+
+  browser-nrepl {:doc "Start browser nREPL"
+                 :task (tasks/browser-nrepl (cli/parse-opts *command-line-args*
+                                                            {:coerce {:nrepl-port :int
+                                                                      :websocket-port :int}}))}
+
+  docs-sync {:doc "Sync docs from the epupp GitHub repository"
+             :task (tasks/docs-sync)}}}
