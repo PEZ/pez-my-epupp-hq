@@ -931,18 +931,19 @@
 
 (defn scan-post! [post-el]
   (let [raw (scrape-post-element post-el)]
-    (when (and (activity-urn? (:raw/urn raw))
-               (not ((:nav/seen-urns @!state) (:raw/urn raw))))
+    (when (activity-urn? (:raw/urn raw))
       (let [urn (:raw/urn raw)]
-        (swap! !state update :nav/seen-urns conj urn)
+        ;; Always try pin injection (idempotent — checks for existing pin)
         (inject-pin-button! post-el urn)
-        (when-let [current-user-slug (:nav/current-user-slug @!state)]
-          (when (own-post? current-user-slug raw)
-            (let [now (.toISOString (js/Date.))
-                  snapshot (raw->post-snapshot raw now)]
-              (swap! !state hoard-own-post urn snapshot)
-              (schedule-save!)
-              (js/console.log "[epupp:squirrel] Own post detected:" urn))))))))
+        (when-not ((:nav/seen-urns @!state) urn)
+          (swap! !state update :nav/seen-urns conj urn)
+          (when-let [current-user-slug (:nav/current-user-slug @!state)]
+            (when (own-post? current-user-slug raw)
+              (let [now (.toISOString (js/Date.))
+                    snapshot (raw->post-snapshot raw now)]
+                (swap! !state hoard-own-post urn snapshot)
+                (schedule-save!)
+                (js/console.log "[epupp:squirrel] Own post detected:" urn)))))))))
 
 (defn scan-visible-posts! []
   (doseq [post-el (qa-doc :sel/post-container)]
