@@ -25,7 +25,21 @@
 				"projectType": "scittle",
 				"fallbackPort": 3339,
 				"replSessionNames": {
-					"primary": "epupp-default"
+					"primary": "epupp"
+				},
+				"replSessionFilePatterns": {
+					"primary": [
+						"userscripts/*.cljs",
+						"live-tampers/*.cljs"
+					]
+				}
+			},
+			{
+				"name": "Epupp LinkedIn REPL",
+				"projectType": "scittle",
+				"fallbackPort": 11337,
+				"replSessionNames": {
+					"primary": "epupp-linkedin"
 				},
 				"replSessionFilePatterns": {
 					"primary": [

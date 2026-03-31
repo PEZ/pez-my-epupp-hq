@@ -50,6 +50,18 @@
       }
     },
     {
+      "label": "Epupp LinkedIn REPL",
+      "type": "shell",
+      "command": "bb browser-nrepl --nrepl-port 11337 --websocket-port 11338",
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "panel": "dedicated",
+        "group": "REPLs"
+      }
+    },
+    {
       "label": "Epupp Ebay REPL",
       "type": "shell",
       "command": "bb browser-nrepl --nrepl-port 23398 --websocket-port 23399",
@@ -65,10 +77,11 @@
       "label": "Start Dev Environment",
       "dependsOn": [
         "Epupp REPL",
+        "Epupp GitHub REPL",
         "Epupp Gitlab REPL",
         "Epupp YouTube REPL",
+        "Epupp LinkedIn REPL",
         "Epupp Ebay REPL",
-        "Epupp GitHub REPL"
       ],
       "group": {
         "kind": "build",
