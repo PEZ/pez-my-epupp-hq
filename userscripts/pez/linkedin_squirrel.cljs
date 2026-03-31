@@ -197,9 +197,7 @@
                             (.getAttribute "href"))
         text (some-> (.querySelector el "[data-testid='expandable-text-box']")
                      .-textContent)]
-    (or (generate-synthetic-urn profile-url text)
-        (when-let [tc (.-textContent el)]
-          (str "urn:li:synthetic:" (string-hash (subs tc 0 (min 200 (count tc)))))))))
+    (generate-synthetic-urn profile-url text)))
 
 (defn find-post-container
   "Find the containing post element from a target element.
@@ -305,8 +303,7 @@
         has-article (and has-external-link (some? article-img))
         has-image (and (pos? (count feedshare-imgs)) (not has-article))
         has-iframe (some? (.querySelector post-el "iframe"))]
-    {:raw/urn (or (generate-synthetic-urn profile-url post-text)
-                  (str "urn:li:synthetic:" (hash (.-textContent post-el))))
+    {:raw/urn (generate-synthetic-urn profile-url post-text)
      :raw/author-name name
      :raw/author-headline headline
      :raw/author-avatar-url (when avatar-img (.getAttribute avatar-img "src"))
@@ -1156,7 +1153,7 @@
                  :margin "4px 0"
                  :background "#fffde7"
                  :border "2px solid #f59e0b"
-                 :transition "background-color 1s ease-out, border-color 1s ease-out"
+                 :transition "background-color 0.3s ease-out, border-color 1s ease-out"
                  :border-radius "8px"
                  :display "flex"
                  :align-items "center"
@@ -1195,6 +1192,7 @@
                                 (reset-viewport-buffer!)
                                 (js/console.log "[epupp:squirrel] Dismissed vanished-posts button"))}))
               (.insertBefore (.-parentElement anchor) mount anchor)
+              (reset-viewport-buffer!)
               (js/setTimeout
                (fn []
                  (when-let [inner (.-firstElementChild mount)]
