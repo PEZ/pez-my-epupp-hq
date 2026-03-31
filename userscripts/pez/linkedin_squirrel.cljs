@@ -179,8 +179,9 @@
     (< (* (js/parseInt (second m)) 1000) (.getTime (js/Date.)))))
 
 (defn stale-images? [post]
-  (or (cdn-url-expired? (:post/author-avatar-url post))
-      (cdn-url-expired? (:post/media-image-url post))))
+  (boolean
+   (or (cdn-url-expired? (:post/author-avatar-url post))
+       (cdn-url-expired? (:post/media-image-url post)))))
 
 (defn- string-hash [s]
   (reduce (fn [hash ch]
