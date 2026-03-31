@@ -1,0 +1,7 @@
+{:paths ["."]
+ :deps {babashka/fs {:mvn/version "0.5.30"}}
+ :tasks
+ {:requires ([tasks])
+
+  compare {:doc "Compare personal project to template"
+           :task (tasks/compare-repos!)}}}
