@@ -1153,9 +1153,10 @@
 
 (defn vanished-button-view [{:keys [n on-click on-dismiss]}]
   [:div {:style {:padding "12px 16px"
-                 :margin "8px 0"
+                 :margin "4px 0"
                  :background "#fffde7"
                  :border "2px solid #f59e0b"
+                 :transition "background-color 1s ease-out, border-color 1s ease-out"
                  :border-radius "8px"
                  :display "flex"
                  :align-items "center"
@@ -1194,6 +1195,12 @@
                                 (reset-viewport-buffer!)
                                 (js/console.log "[epupp:squirrel] Dismissed vanished-posts button"))}))
               (.insertBefore (.-parentElement anchor) mount anchor)
+              (js/setTimeout
+               (fn []
+                 (when-let [inner (.-firstElementChild mount)]
+                   (set! (.. inner -style -backgroundColor) "transparent")
+                   (set! (.. inner -style -borderColor) "#e5e7eb")))
+               3000)
               (js/console.log "[epupp:squirrel] Feed refresh detected, injected vanished-posts button"))))))))
 
 (defn create-viewport-observer! []
