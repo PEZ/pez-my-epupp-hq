@@ -174,6 +174,14 @@
            (string/starts-with? urn "urn:li:share:")
            (string/starts-with? urn "urn:li:synthetic:"))))
 
+(defn- cdn-url-expired? [url]
+  (when-let [m (and (string? url) (re-find #"[?&]e=(\d+)" url))]
+    (< (* (js/parseInt (second m)) 1000) (.getTime (js/Date.)))))
+
+(defn stale-images? [post]
+  (or (cdn-url-expired? (:post/author-avatar-url post))
+      (cdn-url-expired? (:post/media-image-url post))))
+
 (defn- string-hash [s]
   (reduce (fn [hash ch]
             (let [h (+ (bit-shift-left hash 5) (- hash) (.charCodeAt ch 0))]
@@ -428,15 +436,15 @@
 
 (defn find-existing-urn
   "Find the URN of an already-hoarded post that matches the given snapshot
-   by content identity (author-profile-url + text-preview). Returns nil
-   if no match or if the snapshot's own URN already exists."
+   by content identity (author slug + text-preview). Uses extract-profile-slug
+   for cross-era matching (old URLs had query params, new ones don't)."
   [posts urn snapshot]
   (when-not (contains? posts urn)
-    (let [author (:post/author-profile-url snapshot)
+    (let [author-slug (extract-profile-slug (:post/author-profile-url snapshot))
           text (:post/text-preview snapshot)]
-      (when (and author text)
+      (when (and author-slug text)
         (some (fn [[existing-urn post]]
-                (when (and (= author (:post/author-profile-url post))
+                (when (and (= author-slug (extract-profile-slug (:post/author-profile-url post)))
                            (= text (:post/text-preview post)))
                   existing-urn))
               posts)))))
@@ -444,13 +452,18 @@
 (defn hoard-post
   "Add or update a post in state. Merges engagement and preserves pin.
    Deduplicates by content identity: if a post with the same author+text
-   already exists under a different URN, merges into the existing entry."
+   already exists under a different URN, merges into the existing entry.
+   Heals image URLs from fresh snapshot on every encounter."
   [state urn snapshot engagement-type now]
   (let [resolved-urn (or (find-existing-urn (:squirrel/posts state) urn snapshot)
                          urn)
         existing (get-in state [:squirrel/posts resolved-urn])
+        fresh-images (select-keys snapshot [:post/author-avatar-url
+                                            :post/author-profile-url
+                                            :post/media-image-url])
         merged (if existing
                  (-> existing
+                     (merge fresh-images)
                      (update :post/engagements (fnil conj #{}) engagement-type)
                      (assoc :post/last-engaged now))
                  (-> snapshot
@@ -475,23 +488,26 @@
 (defn hoard-own-post
   "Hoard a post authored by the current user.
    New post: hoarded with :engaged/posted, timestamps set to now.
-   Already hoarded without :engaged/posted: adds engagement, doesn't update last-engaged.
-   Already has :engaged/posted: no-op.
+   Already hoarded without :engaged/posted: heals images and adds engagement,
+   doesn't update last-engaged.
+   Already has :engaged/posted: heals image URLs and keeps it otherwise unchanged.
    Deduplicates by content identity like hoard-post."
   [state urn snapshot]
   (let [resolved-urn (or (find-existing-urn (:squirrel/posts state) urn snapshot)
                          urn)
-        existing (get-in state [:squirrel/posts resolved-urn])]
+        existing (get-in state [:squirrel/posts resolved-urn])
+        fresh-images (select-keys snapshot [:post/author-avatar-url
+                                            :post/author-profile-url
+                                            :post/media-image-url])]
     (cond
-      ;; Already has :engaged/posted - no-op
       (contains? (:post/engagements existing) :engaged/posted)
-      state
+      (update-in state [:squirrel/posts resolved-urn] merge fresh-images)
 
-      ;; Hoarded but missing :engaged/posted - add engagement only
       existing
-      (update-in state [:squirrel/posts resolved-urn :post/engagements] conj :engaged/posted)
+      (-> state
+          (update-in [:squirrel/posts resolved-urn] merge fresh-images)
+          (update-in [:squirrel/posts resolved-urn :post/engagements] conj :engaged/posted))
 
-      ;; Not hoarded - create new entry
       :else
       (-> state
           (assoc-in [:squirrel/posts resolved-urn]
@@ -598,18 +614,25 @@
      (let [urn genesis-post-urn
            existing (get-in state [:squirrel/posts urn])]
        (if existing
-         (update-in state [:squirrel/posts urn :post/engagements] conj :engaged/genesis)
+         (-> state
+             (update-in [:squirrel/posts urn :post/engagements] conj :engaged/genesis)
+             (assoc-in [:squirrel/posts urn :post/author-avatar-url]
+                       "https://media.licdn.com/dms/image/v2/D4D03AQGtmEWdnxAxDQ/profile-displayphoto-shrink_100_100/profile-displayphoto-shrink_100_100/0/1666595543864?e=1776297600&v=beta&t=_puNwcb-U5f0TgNpvvZZrsUuf--yhxlCK36gBNjNH5o")
+             (assoc-in [:squirrel/posts urn :post/author-profile-url]
+                       "https://www.linkedin.com/in/cospaia/")
+             (assoc-in [:squirrel/posts urn :post/media-image-url]
+                       "https://media.licdn.com/dms/image/v2/D4D05AQHDh2A2GSu1_g/feedshare-thumbnail_720_1280/B4DZy4A2H.GUA8-/0/1772613758781?e=1775574000&v=beta&t=g3bVbs1xJctRDyFI69d8JzjQyf8ta-NwazXgzr-ctt8"))
          (let [now (.toISOString (js/Date.))]
            (-> state
                (assoc-in [:squirrel/posts urn]
                          {:post/urn urn
                           :post/author-name "Peter (PEZ) Strömberg"
                           :post/author-headline "Clojurian Contractor, Hacking on Calva. I just want to code, dammit! Haha"
-                          :post/author-avatar-url "https://media.licdn.com/dms/image/v2/D4D03AQGtmEWdnxAxDQ/profile-displayphoto-shrink_100_100/profile-displayphoto-shrink_100_100/0/1666595543864?e=1774483200&v=beta&t=nfQ9dNrugY9liczcfBdfgvCvF5PokRrg4kb8oqQnAsI"
-                          :post/author-profile-url "https://www.linkedin.com/in/cospaia?miniProfileUrn=urn%3Ali%3Afsd_profile%3AACoAAABSgXMBKDwFEllIvlSVXp-7fH1WATAfb0k"
+                          :post/author-avatar-url "https://media.licdn.com/dms/image/v2/D4D03AQGtmEWdnxAxDQ/profile-displayphoto-shrink_100_100/profile-displayphoto-shrink_100_100/0/1666595543864?e=1776297600&v=beta&t=_puNwcb-U5f0TgNpvvZZrsUuf--yhxlCK36gBNjNH5o"
+                          :post/author-profile-url "https://www.linkedin.com/in/cospaia/"
                           :post/text-preview "I made a browser userscript I call LinkedIn Squirrel, which hoards posts I engage with and gives me a UI for quickly finding them. The Squirrel also helps recover posts that vanish under my nose while I am reading them in the feed.You can use Squirrel too. You need Epupp, an extension for Chrome and Firefox, available at the extension stores. (I made Epupp too). And you need the Squirrel script:https://lnkd.in/d2swsZkf(Open/reload the script page with Epupp installed.)Please let me know if your \u2026"
                           :post/media-type :media/video
-                          :post/media-image-url "https://media.licdn.com/dms/image/v2/D4D05AQHDh2A2GSu1_g/feedshare-thumbnail_720_1280/B4DZy4A2H.GUA8-/0/1772613758781?e=1773226800&v=beta&t=9Ai2DQI8EfqTPl9z-I4sqBEC2xeuP2b5SksXJbiFBkg"
+                          :post/media-image-url "https://media.licdn.com/dms/image/v2/D4D05AQHDh2A2GSu1_g/feedshare-thumbnail_720_1280/B4DZy4A2H.GUA8-/0/1772613758781?e=1775574000&v=beta&t=g3bVbs1xJctRDyFI69d8JzjQyf8ta-NwazXgzr-ctt8"
                           :post/reshare? false
                           :post/pinned? false
                           :post/engagements #{:engaged/genesis}
@@ -1377,6 +1400,8 @@
   (let [{:keys [squirrel/posts ui/search-text ui/filter-engagement ui/filter-media]} state
         filtered (filter-posts posts state)
         sorted (sort-posts filtered)
+        {current-posts false stale-posts true} (group-by stale-images? sorted)
+        show-stale? (:ui/show-legacy? state)
         post-count (count posts)]
     [:div {:id "epupp-squirrel-panel"
            :style {:position "fixed" :top "52px" :right "0" :bottom "0"
@@ -1425,12 +1450,28 @@
          label])]
      ;; Post count
      [:div {:style {:padding "4px 16px" :font-size "11px" :color "#666"}}
-      [:span (str (count sorted) " matching posts")]]
+      [:span (str (count current-posts) " matching posts"
+                  (when (seq stale-posts)
+                    (str " + " (count stale-posts) " stale")))]]
      ;; Post list
      [:div {:style {:flex "1" :overflow-y "auto" :overscroll-behavior "contain"}}
       (if (seq sorted)
-        (for [post sorted]
-          (post-card post))
+        [:div
+         (for [post current-posts]
+           (post-card post))
+         (when (seq stale-posts)
+           [:div
+            [:button {:style {:width "100%" :padding "8px 16px" :border "none"
+                              :background "#f5f5f5" :cursor "pointer"
+                              :font-size "12px" :color "#666"
+                              :border-top "1px solid #e0e0e0"
+                              :border-bottom "1px solid #e0e0e0"
+                              :text-align "left"}
+                      :on {:click (fn [_] (swap! !state update :ui/show-legacy? not))}}
+             (str (if show-stale? "\u25bc" "\u25b6") " Stale images (" (count stale-posts) ") \u2014 visit to heal")]
+            (when show-stale?
+              (for [post stale-posts]
+                (post-card post)))])]
         [:div {:style {:padding "32px" :text-align "center" :color "#999"}}
          "No hoarded posts yet"])]]))
 
