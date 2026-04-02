@@ -738,7 +738,7 @@
 
 (def click-patterns
   [{:source :btn-aria :pattern #"(?i)react"    :engagement :engaged/liked}
-   {:source :btn-aria :pattern #"(?i)comment"  :engagement :engaged/commented}
+   {:source :text     :pattern #"(?i)^comment$" :engagement :engaged/commented}
    {:source :text     :pattern #"(?i)repost"   :engagement :engaged/reposted}
    {:source :text     :pattern #"(?i)\bsave\b" :engagement :engaged/saved}
    {:source :text     :pattern #"(?i)more"     :engagement :engaged/expanded}
@@ -750,6 +750,26 @@
           (when (re-find pattern (get click-context source ""))
             engagement))
         click-patterns))
+
+(defn watch-repost-toast!
+  "After repost engagement, polls for LinkedIn's success toast.
+   When detected, calls upgrade-synthetic-urn! (safe since popup is closed)."
+  [post-el urn]
+  (let [attempts (atom 0)
+        max-attempts 20
+        check! (atom nil)]
+    (reset! check!
+            (fn []
+              (let [toast (js/document.querySelector "[role='alert']")
+                    link (when toast (.querySelector toast "a"))
+                    text (when link (.-textContent link))]
+                (if (and text (re-find #"(?i)view repost" text))
+                  (do
+                    (js/console.log "[epupp:squirrel] Repost toast detected, upgrading URN")
+                    (upgrade-synthetic-urn! post-el urn))
+                  (when (< (swap! attempts inc) max-attempts)
+                    (js/setTimeout @check! 500))))))
+    (js/setTimeout @check! 1000)))
 
 (defn handle-engagement! [e]
   (try
@@ -763,7 +783,9 @@
             (swap! !state hoard-post urn snapshot engagement now)
             (schedule-save!)
             (js/console.log "[epupp:squirrel] Engagement:" (name engagement) urn)
-            (upgrade-synthetic-urn! post-el urn)))))
+            (if (= engagement :engaged/reposted)
+              (watch-repost-toast! post-el urn)
+              (upgrade-synthetic-urn! post-el urn))))))
     (catch :default err
       (js/console.error "[epupp:squirrel] Engagement handler error:" err))))
 
