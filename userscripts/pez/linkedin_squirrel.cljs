@@ -2,11 +2,13 @@
  :epupp/auto-run-match "https://www.linkedin.com/*"
  :epupp/description "LinkedIn Squirrel. Hoards posts you engage with on LinkedIn so that you can easily find them later"
  :epupp/run-at "document-idle"
- :epupp/inject ["scittle://replicant.js"]}
+ :epupp/inject ["scittle://replicant.js"
+                "epupp://epupp.ui.cljs"]}
 
 (ns pez.linkedin-squirrel
   (:require [clojure.edn]
             [clojure.string :as string]
+            [epupp.ui :as ui]
             [replicant.dom :as r]))
 
 (defonce !state
@@ -30,46 +32,6 @@
         (swap! !resources assoc :resource/panel-container container)))))
 
 (ensure-panel-container!)
-
-(defn epupp-icon
-  [& {:keys [size] :or {size 36}}]
-  (let [accent-color "#FFDC73"]
-    [:svg {:width size
-           :height size
-           :viewBox "0 0 100 100"
-           :fill :none
-           :xmlns "http://www.w3.org/2000/svg"}
-     [:path
-      {:d
-       "M50 0.999996C77.062 0.999996 99 22.938 99 50C99 77.0619 77.062 99 50 99C22.9381 99 1 77.0619 1 50C1 22.938 22.9381 0.999996 50 0.999996Z"
-       :fill "#4A71C4"
-       :stroke accent-color
-       :stroke-width "2"}]
-     [:path
-      {:d
-       "M34.9792 36.9613L75.3818 0.999997L15.0206 37.2308L44.6048 50.8483L23.4278 84.9488L85.5 67.5L48.8818 66L55.9177 47.6053L34.9792 36.9613Z"
-       :fill accent-color}]]))
-
-(defn epupp-header [& {:keys [size title tagline]
-                       :or {size 36
-                            title "Epupp"
-                            tagline "Live Tamper your Web"}}]
-  (let [font-size (* size (/ 24 36))]
-    [:div {:style {:font-size (str font-size "px")
-                   :display "flex"
-                   :align-items "center"
-                   :gap "8px"}}
-     (epupp-icon :size size)
-     [:span {:style {:font-weight 500
-                     :display "flex"
-                     :align-items "baseline"}}
-      title
-      (when tagline
-        [:span {:style {:font-size (str (* 0.75 font-size) "px")
-                        :font-style "italic"
-                        :font-weight 400
-                        :margin-left "4px"}}
-         tagline])]]))
 
 (def selectors ; Selector Registry
   {:sel/feed-container    ["[data-testid='mainFeed']" "main"]
@@ -1183,9 +1145,9 @@
       (when (= reshare-media-type :media/article)
         (article-mini-card reshared-post))]
      (list
-       (media-thumbnail post)
-       (when (= media-type :media/article)
-         (article-mini-card post))))))
+      (media-thumbnail post)
+      (when (= media-type :media/article)
+        (article-mini-card post))))))
 
 (defn vanished-post-card [{:post/keys [urn media-type] :as post}
                           {:keys [on-pin]}]
@@ -1195,24 +1157,24 @@
                    :border-left "3px solid #f59e0b"
                    :background (if pinned? "#fffde7" "white")}}
      (post-card-body post
-       [:div {:style {:display "flex" :align-items "center" :gap "4px"
-                      :flex-shrink "0" :margin-top "2px"}}
-        [:button {:style {:background "none" :border "none" :cursor "pointer"
-                          :font-size "16px" :padding "4px" :line-height "1"
-                          :color (if pinned? "#f59e0b" "#666")}
-                  :title (if pinned? "Unpin" "Pin to hoard")
-                  :on {:click (fn [e]
-                                (.stopPropagation e)
-                                (on-pin urn post))}}
-         (if pinned? "\u2605" "\u2606")]
-        [:button {:style {:background "none" :border "none" :cursor "pointer"
-                          :font-size "13px" :padding "4px" :line-height "1"
-                          :color "#0a66c2"}
-                  :title "Open post"
-                  :on {:click (fn [e]
-                                (.stopPropagation e)
-                                (js/window.open (str "https://www.linkedin.com/feed/update/" urn "/") "_blank"))}}
-         "\u2197"]])
+                     [:div {:style {:display "flex" :align-items "center" :gap "4px"
+                                    :flex-shrink "0" :margin-top "2px"}}
+                      [:button {:style {:background "none" :border "none" :cursor "pointer"
+                                        :font-size "16px" :padding "4px" :line-height "1"
+                                        :color (if pinned? "#f59e0b" "#666")}
+                                :title (if pinned? "Unpin" "Pin to hoard")
+                                :on {:click (fn [e]
+                                              (.stopPropagation e)
+                                              (on-pin urn post))}}
+                       (if pinned? "\u2605" "\u2606")]
+                      [:button {:style {:background "none" :border "none" :cursor "pointer"
+                                        :font-size "13px" :padding "4px" :line-height "1"
+                                        :color "#0a66c2"}
+                                :title "Open post"
+                                :on {:click (fn [e]
+                                              (.stopPropagation e)
+                                              (js/window.open (str "https://www.linkedin.com/feed/update/" urn "/") "_blank"))}}
+                       "\u2197"]])
      [:div {:style {:display "flex" :gap "4px" :flex-wrap "wrap"}}
       (when media-type
         [:span {:style {:background "#e3f2fd" :color "#1565c0" :padding "2px 6px"
@@ -1223,32 +1185,32 @@
   (let [on-pin (fn [urn snapshot]
                  (let [now (.toISOString (js/Date.))]
                    (storage-transact! (fn [s]
-                                       (let [s (if (get-in s [:squirrel/posts urn])
-                                                 s
-                                                 (hoard-post s urn snapshot :engaged/pinned now))]
-                                         (toggle-pin s urn))))
+                                        (let [s (if (get-in s [:squirrel/posts urn])
+                                                  s
+                                                  (hoard-post s urn snapshot :engaged/pinned now))]
+                                          (toggle-pin s urn))))
                    (render-vanished-cards! mount snapshots)))
         on-dismiss (fn [_]
                      (.removeChild (.-parentElement mount) mount)
                      (reset-viewport-buffer!)
                      (js/console.log "[epupp:squirrel] Dismissed vanished cards"))]
     (r/render mount
-      [:div {:id "epupp-squirrel-vanished-container"
-             :style {:border-radius "8px" :overflow "hidden"
-                     :border "2px solid #f59e0b" :margin "8px 0"}}
-       [:div {:style {:padding "8px 12px" :background "#fffde7"
-                      :display "flex" :align-items "center" :gap "8px"}}
-        [:div {:style {:flex 1}}
-         (epupp-header :size 20 :title "Squirrel" :tagline
-                       (str (count snapshots) " vanished posts"))]
-        [:button {:style {:background "none" :border "none" :cursor "pointer"
-                          :font-size "18px" :color "#92400e" :padding "4px"
-                          :line-height 1}
-                  :title "Dismiss"
-                  :on {:click on-dismiss}}
-         "\u00D7"]]
-       (for [snapshot snapshots]
-         (vanished-post-card snapshot {:on-pin on-pin}))])))
+              [:div {:id "epupp-squirrel-vanished-container"
+                     :style {:border-radius "8px" :overflow "hidden"
+                             :border "2px solid #f59e0b" :margin "8px 0"}}
+               [:div {:style {:padding "8px 12px" :background "#fffde7"
+                              :display "flex" :align-items "center" :gap "8px"}}
+                [:div {:style {:flex 1}}
+                 (ui/epupp-header :size 20 :title "Squirrel" :tagline
+                                  (str (count snapshots) " vanished posts"))]
+                [:button {:style {:background "none" :border "none" :cursor "pointer"
+                                  :font-size "18px" :color "#92400e" :padding "4px"
+                                  :line-height 1}
+                          :title "Dismiss"
+                          :on {:click on-dismiss}}
+                 "\u00D7"]]
+               (for [snapshot snapshots]
+                 (vanished-post-card snapshot {:on-pin on-pin}))])))
 
 (defn vanished-button-view [{:keys [n on-click on-dismiss]}]
   [:div {:style {:padding "12px 16px"
@@ -1263,8 +1225,8 @@
                  :gap "8px"}}
    [:div {:style {:cursor "pointer" :flex 1}
           :on {:click on-click}}
-    (epupp-header :size 24 :title "Squirrel" :tagline
-                  (str "Show " n " vanished posts"))]
+    (ui/epupp-header :size 24 :title "Squirrel" :tagline
+                     (str "Show " n " vanished posts"))]
    [:button {:style {:background "none" :border "none" :cursor "pointer"
                      :font-size "18px" :color "#92400e" :padding "4px"
                      :line-height 1}
@@ -1283,16 +1245,16 @@
             (let [mount (js/document.createElement "div")]
               (set! (.-id mount) "epupp-squirrel-vanished-mount")
               (r/render mount
-                (vanished-button-view
-                 {:n n
-                  :on-click (fn [_]
-                              (render-vanished-cards! mount vanished-snapshots)
-                              (js/console.log "[epupp:squirrel] Rendered" n "vanished post cards"))
-                  :on-dismiss (fn [e]
-                                (.stopPropagation e)
-                                (.removeChild (.-parentElement mount) mount)
-                                (reset-viewport-buffer!)
-                                (js/console.log "[epupp:squirrel] Dismissed vanished-posts button"))}))
+                        (vanished-button-view
+                         {:n n
+                          :on-click (fn [_]
+                                      (render-vanished-cards! mount vanished-snapshots)
+                                      (js/console.log "[epupp:squirrel] Rendered" n "vanished post cards"))
+                          :on-dismiss (fn [e]
+                                        (.stopPropagation e)
+                                        (.removeChild (.-parentElement mount) mount)
+                                        (reset-viewport-buffer!)
+                                        (js/console.log "[epupp:squirrel] Dismissed vanished-posts button"))}))
               (.insertBefore (.-parentElement anchor) mount anchor)
               (reset-viewport-buffer!)
               (js/setTimeout
@@ -1493,7 +1455,7 @@
      ;; Header
      [:div {:style {:padding "12px 16px" :border-bottom "1px solid #e0e0e0"
                     :display "flex" :justify-content "space-between" :align-items "center"}}
-      (epupp-header :size 28 :title (str "Hoarded Posts (" post-count ")") :tagline nil)
+      (ui/epupp-header :size 28 :title (str "Hoarded Posts (" post-count ")") :tagline nil)
       [:button {:style {:background "none" :border "none" :cursor "pointer"
                         :font-size "20px" :color "#666" :padding "0 4px"}
                 :on {:click (fn [_] (swap! !state assoc :ui/panel-open? false))}}
