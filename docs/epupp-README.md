@@ -159,7 +159,7 @@ As the creator of Calva, and Calva Backseat Driver I chose to desceibe how to co
 An Epupp userscript is just a text file which starts with a script manifest and some code. You can install scripts in three ways:
 
 1. Pasting/typing a script in the Epupp panel and clicking **Save Script**.
-2. The **Web Userscript Installer** script. The extension has a built-in script that will identify Epupp scripts on code-hosting pages and add an **Install** button near them. On whitelisted domains (GitHub, GitHub Gists, GitLab, Codeberg, localhost) it can install scripts into Epupp. On other sites, it shows copy-paste instructions instead. Try it on this gist: https://gist.github.com/PEZ/3b0fdc406e7593eaaef609b6fb4a687d (It's the script created in the demo video.)
+2. The **Web Userscript Installer** script. The extension has a built-in script that identifies Epupp scripts on code-hosting pages and adds an **Install** button near them. On GitHub gist pages and GitHub repo file pages, installable code blocks that declare `:epupp/library? true` can also show **Copy library URL**, which copies a pinned dependency URL you can paste into `:epupp/inject`. On whitelisted domains (GitHub, GitHub Gists, GitLab, Codeberg, localhost) it can install scripts into Epupp. On other sites, it shows copy-paste instructions instead. Try it on this gist: https://gist.github.com/PEZ/3b0fdc406e7593eaaef609b6fb4a687d (It's the script created in the demo video.)
 3. Using the REPL. There's a `epupp.fs` namespace for listing/reading/writing/renaming scripts in the Epupp extension storage.
 
 ## The Epupp UI
@@ -177,6 +177,7 @@ The popup has the following sections:
 1. **REPL Connect**. Shows how to connect the current tab's REPL to your editor and/or AI agent. Also shows which tabs are currently connected.
 2. Userscripts sections:
    * **Manual/on-demand**. Scripts that do not auto-run on any page, use the **play** button to run them.
+  * **Libraries**. Scripts marked with `:epupp/library? true` that have no auto-run pattern. These are explicitly marked library scripts used by other scripts via `:epupp/inject`. Collapsed by default. Other scripts can still participate in dependency flows via `:epupp/inject`.
    * **Auto-run for this page**. Scripts that has an `:epupp/auto-run-match` pattern than matches the current page.
    * *Auto-run not matching this page*. Scripts that auto-runs on some other pages, but not the current one.
    * **Special**. Built-in scripts that has some special way of being triggered to start. (Currently only the **Web Userscript Installer**)
@@ -268,7 +269,8 @@ The manifest is a plain Clojure map at the top of the file. Your code runs in th
 | `:epupp/auto-run-match` | No | - | URL glob pattern(s). String or vector of strings. Omit for manual-only scripts. |
 | `:epupp/description` | No | - | Shown in the popup UI. |
 | `:epupp/run-at` | No | `"document-idle"` | When to run: `"document-start"`, `"document-end"`, or `"document-idle"`. |
-| `:epupp/inject` | No | `[]` | Scittle library URLs to load before the script runs. |
+| `:epupp/inject` | No | `[]` | Dependency URLs to load before the script runs. Supports `scittle://` (bundled libraries), `epupp://` (user library scripts), and raw HTTPS URLs from `raw.githubusercontent.com` or `gist.githubusercontent.com` pinned to full SHAs. |
+| `:epupp/library?` | No | `false` | Mark as a library script. Library-only scripts (no `:epupp/auto-run-match`) appear in a dedicated Libraries section in the popup. Scripts with both `:epupp/library?` and `:epupp/auto-run-match` appear in their auto-run section. |
 
 Scripts with `:epupp/auto-run-match` start disabled. Enable them in the popup for auto-injection on matching pages. Scripts without this key only run when you click the Play button in the popup.
 
@@ -349,21 +351,77 @@ Userscripts can load bundled Scittle ecosystem libraries via `:epupp/inject`:
 
 Dependencies resolve automatically: `scittle://re-frame.js` loads Reagent and React.
 
-> [!NOTE]
-> **No Script Modularity**
->
-> Epupp userscripts are currently self-contained. You cannot split code across multiple scripts or create shared library modules of your own. This may change in the future.
+### Library Namespaces
 
+Any userscript can serve as a shared library. Reference it from another script's `:epupp/inject` using the `epupp://` protocol:
+
+**Library script** (`utils/dom.cljs`):
+```clojure
+{:epupp/script-name "utils/dom.cljs"
+ :epupp/description "DOM utility functions"
+ :epupp/library? true}
+
+(ns utils.dom)
+
+(defn hide! [selector]
+  (when-let [el (js/document.querySelector selector)]
+    (set! (.. el -style -display) "none")))
+```
+
+**Consumer script** (`my/tweaks.cljs`):
+```clojure
+{:epupp/script-name "my/tweaks.cljs"
+ :epupp/auto-run-match "https://example.com/*"
+ :epupp/inject ["scittle://replicant.js" "epupp://utils/dom.cljs"]}
+
+(ns my.tweaks
+  (:require [utils.dom :as dom]
+            [replicant.dom :as r]))
+
+(dom/hide! "#annoying-banner")
+```
+
+Epupp resolves dependencies transitively: if your library itself has `epupp://` or `scittle://` dependencies, those are resolved too. Cycles are detected and reported.
+
+Any script becomes a library when another script references it via `:epupp/inject`. Disabled scripts and built-in scripts are valid library targets. Scripts can also declare `:epupp/library? true` in their manifest to appear in the popup's Libraries section (when they have no auto-run pattern).
+
+> [!NOTE]
+> When a script both auto-runs and is used as a library by another auto-run script on the same page, it may execute twice (once as a library injection, once as its own auto-run).
 
 From a live REPL session, you can load libraries at runtime with `epupp.repl/manifest!`:
 
 ```clojure
-(epupp.repl/manifest! {:epupp/inject ["scittle://pprint.js"]})
+(epupp.repl/manifest! {:epupp/inject ["scittle://pprint.js"
+                                      "epupp://utils/dom.cljs"]})
 (require '[cljs.pprint :as pprint])
 (pprint/pprint {:some "data"})
 ```
 
 Safe to call multiple times - already-loaded libraries are skipped.
+
+### External Dependencies
+
+Scripts can depend on code hosted on GitHub's raw content hosts via HTTPS URLs in `:epupp/inject`. Supported hosts are `raw.githubusercontent.com` for repository files and `gist.githubusercontent.com` for gists. All URLs must be pinned to a full 40-character SHA, ensuring immutable, reproducible dependencies.
+
+```clojure
+{:epupp/script-name "my/tweaks.cljs"
+ :epupp/auto-run-match "https://example.com/*"
+ :epupp/inject ["https://raw.githubusercontent.com/user/repo/0123456789abcdef0123456789abcdef01234567/path/to/helpers.cljs"
+                "https://gist.githubusercontent.com/user/GIST_ID/raw/89abcdef0123456789abcdef0123456789abcdef/helpers.cljs"]}
+```
+
+**Trusted URL formats:**
+
+| Host | Format |
+|------|--------|
+| `raw.githubusercontent.com` | `https://raw.githubusercontent.com/owner/repo/SHA/path/to/file.cljs` |
+| `gist.githubusercontent.com` | `https://gist.githubusercontent.com/owner/GIST_ID/raw/SHA/filename.cljs` |
+
+On GitHub gist pages and GitHub repo file pages, installable code blocks marked `:epupp/library? true` can show `Copy library URL` alongside Install or Update. It copies one of the pinned URL formats above. The copied value may be normalized or derived, so it is not necessarily the page's visible Raw link. This is a library-authoring convenience, not a requirement for participating in dependency flows.
+
+External dependencies are fetched and cached when the script is saved (via panel, web installer, or FS API). At page load, they're injected from cache. Transitive dependencies are supported.
+
+Only public GitHub content is supported (no authentication). Branch or tag references are not allowed - use a full commit SHA.
 
 ## Epupp Userscript Gallery
 
