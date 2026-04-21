@@ -166,9 +166,10 @@
 ;; === Map-aligned SVG with Mercator rescaling on drag ===
 
 (defn render-draggable-country!
-  "Render a country as a map-aligned, draggable SVG overlay with Mercator rescaling.
-   Supports both Polygon and MultiPolygon geometries.
-   Colors default to the country's flag colors if available."
+  "Render a country as a map-aligned, draggable SVG overlay with per-vertex
+   Mercator rescaling. Each vertex is reprojected individually based on its
+   shifted latitude, producing accurate shape warping across latitudes.
+   Supports both Polygon and MultiPolygon geometries."
   [{:keys [feature map-center-lat map-center-lng zoom
            fill stroke stroke-width]
     :or {stroke-width "2"}}]
@@ -180,85 +181,142 @@
                                      (when stroke {:stroke stroke}))
         geo-type (.. feature -geometry -type)
         geo-coords (.. feature -geometry -coordinates)
-        ;; Extract all outer rings — Polygon has one, MultiPolygon has many
-        all-rings (if (= "MultiPolygon" geo-type)
-                    (mapv (fn [i] (aget (aget geo-coords i) 0))
+        ;; Extract all outer rings as Clojure vectors of [lng lat]
+        raw-rings (if (= "MultiPolygon" geo-type)
+                    (mapv (fn [i]
+                            (let [ring (aget (aget geo-coords i) 0)]
+                              (mapv (fn [j] [(aget (aget ring j) 0)
+                                             (aget (aget ring j) 1)])
+                                    (range (.-length ring)))))
                           (range (.-length geo-coords)))
-                    [(aget geo-coords 0)])
+                    (let [ring (aget geo-coords 0)]
+                      [(mapv (fn [j] [(aget (aget ring j) 0)
+                                      (aget (aget ring j) 1)])
+                             (range (.-length ring)))]))
+        ;; Home center lat/lng from all vertices
+        all-lats (mapcat (fn [ring] (map second ring)) raw-rings)
+        all-lngs (mapcat (fn [ring] (map first ring)) raw-rings)
+        home-center-lat (/ (+ (apply min all-lats) (apply max all-lats)) 2)
+        home-center-lng (/ (+ (apply min all-lngs) (apply max all-lngs)) 2)
         window-w (.-innerWidth js/window)
         window-h (.-innerHeight js/window)
-        cx (lng->world-px map-center-lng zoom)
-        cy (lat->world-px map-center-lat zoom)
-        ;; Project all rings to screen pixels
-        project-ring (fn [ring]
-                       (mapv (fn [coord]
-                               (let [px (lng->world-px (aget coord 0) zoom)
-                                     py (lat->world-px (aget coord 1) zoom)]
-                                 {:x (+ (/ window-w 2) (- px cx))
-                                  :y (+ (/ window-h 2) (- py cy))}))
-                             ring))
-        projected-rings (mapv project-ring all-rings)
-        ;; Compute bounding box across ALL rings
-        all-points (apply concat projected-rings)
-        all-xs (mapv :x all-points)
-        all-ys (mapv :y all-points)
-        min-x (apply min all-xs)
-        min-y (apply min all-ys)
-        max-x (apply max all-xs)
-        max-y (apply max all-ys)
-        svg-w (- max-x min-x)
-        svg-h (- max-y min-y)
-        ;; Home center latitude (for rescaling reference)
-        home-center-y (/ (+ min-y max-y) 2)
-        home-center-lat (screen-y->lat home-center-y map-center-lat zoom window-h)
+        world-size (* 256 (js/Math.pow 2 zoom))
+        map-cx (lng->world-px map-center-lng zoom)
+        map-cy (lat->world-px map-center-lat zoom)
+        ;; Project all rings given a lat/lng offset, with per-vertex
+        ;; longitude scaling to preserve physical (great-circle) width.
+        ;; Each vertex's lng offset from center is scaled by
+        ;; cos(original_lat) / cos(shifted_lat), so high-latitude
+        ;; features contract east-west when dragged toward the equator.
+        deg->rad (/ js/Math.PI 180)
+        project-all
+        (fn [delta-lat delta-lng]
+          (let [new-center-lng (+ home-center-lng delta-lng)]
+            (mapv (fn [ring]
+                    (mapv (fn [[lng lat]]
+                            (let [new-lat (+ lat delta-lat)
+                                  ;; Preserve physical east-west distance
+                                  lng-from-center (- lng home-center-lng)
+                                  cos-ratio (/ (js/Math.cos (* lat deg->rad))
+                                               (js/Math.cos (* new-lat deg->rad)))
+                                  new-lng (+ new-center-lng (* lng-from-center cos-ratio))
+                                  px (lng->world-px new-lng zoom)
+                                  py (lat->world-px new-lat zoom)]
+                              {:x (+ (/ window-w 2) (- px map-cx))
+                               :y (+ (/ window-h 2) (- py map-cy))}))
+                          ring))
+                  raw-rings)))
+        ;; Initial projection (home position)
+        home-projected (project-all 0 0)
+        home-all-pts (apply concat home-projected)
+        home-xs (mapv :x home-all-pts)
+        home-ys (mapv :y home-all-pts)
+        home-min-x (apply min home-xs)
+        home-min-y (apply min home-ys)
+        home-max-x (apply max home-xs)
+        home-max-y (apply max home-ys)
+        home-svg-w (- home-max-x home-min-x)
+        home-svg-h (- home-max-y home-min-y)
+        home-screen-cx (/ (+ home-min-x home-max-x) 2)
+        home-screen-cy (/ (+ home-min-y home-max-y) 2)
         ;; Clean up previous overlay
         _ (when-let [old (js/document.getElementById "country-overlay")]
             (.remove old))
-        ;; Create SVG elements
+        ;; Create SVG
         svg-ns "http://www.w3.org/2000/svg"
         svg (js/document.createElementNS svg-ns "svg")
         label-el (js/document.createElementNS svg-ns "text")
-        ;; Drag state
+        polygon-els (mapv (fn [_] (js/document.createElementNS svg-ns "polygon")) raw-rings)
+        ;; Drag state: track center screen position
         drag-state (atom {:dragging false
                           :offset-x 0 :offset-y 0
-                          :current-left min-x
-                          :current-top min-y})
-        update-scale!
+                          :center-sx home-screen-cx
+                          :center-sy home-screen-cy})
+        ;; Reproject and update SVG
+        update-shape!
         (fn []
-          (let [current-top (:current-top @drag-state)
-                svg-center-y (+ current-top (/ svg-h 2))
-                current-lat (screen-y->lat svg-center-y map-center-lat zoom window-h)
+          (let [{:keys [center-sx center-sy]} @drag-state
+                ;; Convert screen center to lat/lng
+                current-center-lat (screen-y->lat center-sy map-center-lat zoom window-h)
+                world-x (+ map-cx (- center-sx (/ window-w 2)))
+                current-center-lng (- (* (/ world-x world-size) 360) 180)
+                ;; Lat/lng offset from home
+                delta-lat (- current-center-lat home-center-lat)
+                delta-lng (- current-center-lng home-center-lng)
+                ;; Reproject all vertices
+                projected (project-all delta-lat delta-lng)
+                all-pts (apply concat projected)
+                xs (mapv :x all-pts)
+                ys (mapv :y all-pts)
+                mn-x (apply min xs)
+                mn-y (apply min ys)
+                mx-x (apply max xs)
+                mx-y (apply max ys)
+                svg-w (- mx-x mn-x)
+                svg-h (- mx-y mn-y)
+                ;; Scale label: area ratio at center
                 home-cos (js/Math.cos (* home-center-lat (/ js/Math.PI 180)))
-                current-cos (js/Math.cos (* current-lat (/ js/Math.PI 180)))
+                current-cos (js/Math.cos (* current-center-lat (/ js/Math.PI 180)))
                 scale (/ home-cos current-cos)]
-            (set! (.. svg -style -transform) (str "scale(" scale ")"))
+            ;; Update SVG geometry
+            (.setAttribute svg "width" svg-w)
+            (.setAttribute svg "height" svg-h)
+            (.setAttribute svg "viewBox" (str "0 0 " svg-w " " svg-h))
+            (set! (.. svg -style -left) (str mn-x "px"))
+            (set! (.. svg -style -top) (str mn-y "px"))
+            ;; Update polygon points
+            (doseq [[ring-pts poly-el] (map vector projected polygon-els)]
+              (.setAttribute poly-el "points"
+                             (->> ring-pts
+                                  (map #(str (- (:x %) mn-x) "," (- (:y %) mn-y)))
+                                  (clojure.string/join " "))))
+            ;; Update label
+            (.setAttribute label-el "x" (/ svg-w 2))
+            (.setAttribute label-el "y" (/ svg-h 2))
             (set! (.-textContent label-el) (str (.toFixed scale 2) "×"))))]
     ;; SVG setup
     (set! (.-id svg) "country-overlay")
-    (.setAttribute svg "width" svg-w)
-    (.setAttribute svg "height" svg-h)
-    (.setAttribute svg "viewBox" (str "0 0 " svg-w " " svg-h))
+    (.setAttribute svg "width" home-svg-w)
+    (.setAttribute svg "height" home-svg-h)
+    (.setAttribute svg "viewBox" (str "0 0 " home-svg-w " " home-svg-h))
     (.setAttribute svg "overflow" "visible")
     (set! (.. svg -style -cssText)
-          (str "position:fixed;left:" min-x "px;top:" min-y "px;"
+          (str "position:fixed;left:" home-min-x "px;top:" home-min-y "px;"
                "z-index:99999;cursor:grab;pointer-events:auto;"
-               "transform-origin:center center;"
                "filter:drop-shadow(2px 2px 4px rgba(0,0,0,0.5));"))
-    ;; Create a polygon element for each ring
-    (doseq [ring projected-rings]
-      (let [local-points (mapv (fn [p] {:x (- (:x p) min-x) :y (- (:y p) min-y)}) ring)
-            points-str (->> local-points
-                            (map #(str (:x %) "," (:y %)))
-                            (clojure.string/join " "))
-            polygon (js/document.createElementNS svg-ns "polygon")]
-        (.setAttribute polygon "points" points-str)
-        (.setAttribute polygon "fill" fill)
-        (.setAttribute polygon "stroke" stroke)
-        (.setAttribute polygon "stroke-width" stroke-width)
-        (.appendChild svg polygon)))
-    ;; Scale label
-    (.setAttribute label-el "x" (/ svg-w 2))
-    (.setAttribute label-el "y" (/ svg-h 2))
+    ;; Initial polygon rendering
+    (doseq [[ring-pts poly-el] (map vector home-projected polygon-els)]
+      (.setAttribute poly-el "points"
+                     (->> ring-pts
+                          (map #(str (- (:x %) home-min-x) "," (- (:y %) home-min-y)))
+                          (clojure.string/join " ")))
+      (.setAttribute poly-el "fill" fill)
+      (.setAttribute poly-el "stroke" stroke)
+      (.setAttribute poly-el "stroke-width" stroke-width)
+      (.appendChild svg poly-el))
+    ;; Scale label (initial)
+    (.setAttribute label-el "x" (/ home-svg-w 2))
+    (.setAttribute label-el "y" (/ home-svg-h 2))
     (.setAttribute label-el "text-anchor" "middle")
     (.setAttribute label-el "dominant-baseline" "middle")
     (.setAttribute label-el "fill" "white")
@@ -274,18 +332,16 @@
                          (set! (.. svg -style -cursor) "grabbing")
                          (swap! drag-state assoc
                                 :dragging true
-                                :offset-x (- (.-clientX e) (:current-left @drag-state))
-                                :offset-y (- (.-clientY e) (:current-top @drag-state)))))
+                                :offset-x (- (.-clientX e) (:center-sx @drag-state))
+                                :offset-y (- (.-clientY e) (:center-sy @drag-state)))))
     (.addEventListener js/document "mousemove"
                        (fn [e]
                          (when (:dragging @drag-state)
                            (let [{:keys [offset-x offset-y]} @drag-state
-                                 new-left (- (.-clientX e) offset-x)
-                                 new-top (- (.-clientY e) offset-y)]
-                             (swap! drag-state assoc :current-left new-left :current-top new-top)
-                             (set! (.. svg -style -left) (str new-left "px"))
-                             (set! (.. svg -style -top) (str new-top "px"))
-                             (update-scale!)))))
+                                 new-cx (- (.-clientX e) offset-x)
+                                 new-cy (- (.-clientY e) offset-y)]
+                             (swap! drag-state assoc :center-sx new-cx :center-sy new-cy)
+                             (update-shape!)))))
     (.addEventListener js/document "mouseup"
                        (fn [_]
                          (when (:dragging @drag-state)
@@ -307,15 +363,6 @@
 ;; === Rich Comment Forms ===
 
 (comment
-  ;; == Step 1: Ensure flat Mercator map view ==
-  ;; Google Maps can get stuck in Earth/Globe mode.
-  ;; Appending ?force=pwa&source=mldp to the URL forces flat 2D Mercator.
-  ;; Also: the Layers panel has a "Globe view" toggle to switch back.
-  (let [url "https://www.google.com/maps/@30,15,3z?force=pwa&source=mldp"]
-    (js/setTimeout #(set! (.-href js/location) url) 50)
-    (str "Navigating to " url))
-
-  ;; == Step 2: Load libraries and data ==
   ;; (Run this after each page navigation — REPL state resets on reload)
   (ensure-topojson-client!
    (fn []
@@ -327,7 +374,6 @@
 
   (some? @!topo-data)
 
-  ;; == Step 3: Render a draggable country ==
   ;; Uses the current map center/zoom from the URL.
   ;; Drag the shape to different latitudes to see Mercator rescaling!
   (render! "Sweden")
@@ -374,4 +420,12 @@
   (when-let [el (js/document.getElementById "country-overlay")]
     (.remove el))
 
+
+  ;; Ensure flat Mercator map view ==
+  ;; Google Maps can get stuck in Earth/Globe mode.
+  ;; Appending ?force=pwa&source=mldp to the URL forces flat 2D Mercator.
+  ;; Also: the Layers panel has a "Globe view" toggle to switch back.
+  (let [url "https://www.google.com/maps/@30,15,3z?force=pwa&source=mldp"]
+    (js/setTimeout #(set! (.-href js/location) url) 50)
+    (str "Navigating to " url))
   :rcf)
