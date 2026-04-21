@@ -30,6 +30,14 @@
         n (* js/Math.PI (- 1 (* 2 (/ world-y world-size))))]
     (* (/ 180 js/Math.PI) (js/Math.atan (js/Math.sinh n)))))
 
+(defn screen-x->lng
+  "Convert a screen X position back to longitude, given map center and zoom."
+  [screen-x center-lng zoom window-w]
+  (let [world-size (* 256 (js/Math.pow 2 zoom))
+        cx (lng->world-px center-lng zoom)
+        world-x (+ cx (- screen-x (/ window-w 2)))]
+    (- (* (/ world-x world-size) 360) 180)))
+
 (defn latlng->screen-px
   "Convert lat/lng to screen pixel position given map center, zoom, and window size."
   [lat lng center-lat center-lng zoom window-w window-h]
@@ -354,13 +362,76 @@
     (.appendChild js/document.body svg)
     svg))
 
+(defn point-in-ring?
+  "Ray-casting algorithm: returns true if [lng lat] is inside the ring (array of coordinate pairs)."
+  [lng lat ring]
+  (let [n (.-length ring)]
+    (loop [i 0 j (dec n) inside false]
+      (if (>= i n)
+        inside
+        (let [xi (aget (aget ring i) 0)
+              yi (aget (aget ring i) 1)
+              xj (aget (aget ring j) 0)
+              yj (aget (aget ring j) 1)
+              intersect (and (not= (> yi lat) (> yj lat))
+                             (< lng (+ xi (* (/ (- xj xi) (- yj yi))
+                                             (- lat yi)))))]
+          (recur (inc i) i (if intersect (not inside) inside)))))))
+
+(defn find-country-at-latlng
+  "Find the country feature whose geometry contains the given lat/lng."
+  [data lat lng]
+  (let [all-features (.feature js/topojson data (.. data -objects -countries))
+        features (.-features all-features)]
+    (->> (range (.-length features))
+         (some (fn [i]
+                 (let [f (aget features i)
+                       geo-type (.. f -geometry -type)
+                       coords (.. f -geometry -coordinates)]
+                   (when (cond
+                           (= "Polygon" geo-type)
+                           (point-in-ring? lng lat (aget coords 0))
+
+                           (= "MultiPolygon" geo-type)
+                           (some (fn [j]
+                                   (point-in-ring? lng lat (aget (aget coords j) 0)))
+                                 (range (.-length coords)))
+
+                           :else false)
+                     f)))))))
+
+(defn click-to-drag!
+  "Install a click handler on the page: click a country → render it as draggable overlay.
+   Returns a cleanup function that removes the handler."
+  []
+  (let [handler (fn [e]
+                  (when (and @!topo-data
+                             (not (.. e -target (closest "#country-overlay"))))
+                    (let [{:keys [lat lng zoom]} (parse-maps-url (.-href js/location))
+                          click-lat (screen-y->lat (.-clientY e) lat zoom (.-innerHeight js/window))
+                          click-lng (screen-x->lng (.-clientX e) lng zoom (.-innerWidth js/window))
+                          feature (find-country-at-latlng @!topo-data click-lat click-lng)]
+                      (when feature
+                        (js/console.log "Clicked:" (.. feature -properties -name))
+                        (render-draggable-country!
+                         {:feature feature
+                          :map-center-lat lat
+                          :map-center-lng lng
+                          :zoom zoom})))))]
+    (.addEventListener js/document "click" handler)
+    (fn [] (.removeEventListener js/document "click" handler))))
+
 (defn render! [country]
   (let [{:keys [lat lng zoom]} (parse-maps-url (.-href js/location))]
-      (render-draggable-country!
-       {:feature (find-country-feature @!topo-data country)
-        :map-center-lat lat
-        :map-center-lng lng
-        :zoom zoom})))
+    (render-draggable-country!
+     {:feature (find-country-feature @!topo-data country)
+      :map-center-lat lat
+      :map-center-lng lng
+      :zoom zoom})))
+
+;; Click any country on the map to create its draggable overlay
+;; Returns a cleanup fn — call it to remove the click handler
+(defonce stop-click-handler! (click-to-drag!))
 
 ;; === Rich Comment Forms ===
 
@@ -384,6 +455,11 @@
   (render! "United States of America")
   (render! "Algeria")
 
+  ;; Click any country on the map to create its draggable overlay
+  ;; Returns a cleanup fn — call it to remove the click handler
+  (def stop-click-handler! (click-to-drag!))
+  ;; To stop:
+  (stop-click-handler!)
 
   ;; == Explore ==
   (let [geometries (.. @!topo-data -objects -countries -geometries)]
@@ -423,7 +499,6 @@
   (when-let [el (js/document.getElementById "country-overlay")]
     (.remove el))
 
-
   ;; Ensure flat Mercator map view ==
   ;; Google Maps can get stuck in Earth/Globe mode.
   ;; Appending ?force=pwa&source=mldp to the URL forces flat 2D Mercator.
@@ -431,4 +506,7 @@
   (let [url "https://www.google.com/maps/@30,15,3z?force=pwa&source=mldp"]
     (js/setTimeout #(set! (.-href js/location) url) 50)
     (str "Navigating to " url))
+
+  (stop-click-handler!)
+
   :rcf)
