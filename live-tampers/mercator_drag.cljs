@@ -190,17 +190,28 @@
         geo-type (.. feature -geometry -type)
         geo-coords (.. feature -geometry -coordinates)
         ;; Extract all outer rings as Clojure vectors of [lng lat]
-        raw-rings (if (= "MultiPolygon" geo-type)
-                    (mapv (fn [i]
-                            (let [ring (aget (aget geo-coords i) 0)]
-                              (mapv (fn [j] [(aget (aget ring j) 0)
-                                             (aget (aget ring j) 1)])
-                                    (range (.-length ring)))))
-                          (range (.-length geo-coords)))
-                    (let [ring (aget geo-coords 0)]
-                      [(mapv (fn [j] [(aget (aget ring j) 0)
-                                      (aget (aget ring j) 1)])
-                             (range (.-length ring)))]))
+        raw-rings* (if (= "MultiPolygon" geo-type)
+                     (mapv (fn [i]
+                             (let [ring (aget (aget geo-coords i) 0)]
+                               (mapv (fn [j] [(aget (aget ring j) 0)
+                                              (aget (aget ring j) 1)])
+                                     (range (.-length ring)))))
+                           (range (.-length geo-coords)))
+                     (let [ring (aget geo-coords 0)]
+                       [(mapv (fn [j] [(aget (aget ring j) 0)
+                                       (aget (aget ring j) 1)])
+                              (range (.-length ring)))]))
+        ;; Normalize longitudes to be continuous (antimeridian fix).
+        ;; If all-lngs span > 180°, shift negatives by +360 so e.g.
+        ;; Russia's Chukotka (-170°) becomes 190°, continuous with the main body.
+        all-lngs* (mapcat (fn [ring] (map first ring)) raw-rings*)
+        lng-span (- (apply max all-lngs*) (apply min all-lngs*))
+        normalize-lng (if (> lng-span 180)
+                        (fn [lng] (if (< lng 0) (+ lng 360) lng))
+                        identity)
+        raw-rings (mapv (fn [ring]
+                          (mapv (fn [[lng lat]] [(normalize-lng lng) lat]) ring))
+                        raw-rings*)
         ;; Home center lat/lng from all vertices
         all-lats (mapcat (fn [ring] (map second ring)) raw-rings)
         all-lngs (mapcat (fn [ring] (map first ring)) raw-rings)
@@ -402,24 +413,37 @@
 
 (defn click-to-drag!
   "Install a click handler on the page: click a country → render it as draggable overlay.
-   Returns a cleanup function that removes the handler."
+   Distinguishes clicks from drag-ends using mousedown/mouseup distance.
+   Returns a cleanup function that removes the handlers."
   []
-  (let [handler (fn [e]
-                  (when (and @!topo-data
-                             (not (.. e -target (closest "#country-overlay"))))
-                    (let [{:keys [lat lng zoom]} (parse-maps-url (.-href js/location))
-                          click-lat (screen-y->lat (.-clientY e) lat zoom (.-innerHeight js/window))
-                          click-lng (screen-x->lng (.-clientX e) lng zoom (.-innerWidth js/window))
-                          feature (find-country-at-latlng @!topo-data click-lat click-lng)]
-                      (when feature
-                        (js/console.log "Clicked:" (.. feature -properties -name))
-                        (render-draggable-country!
-                         {:feature feature
-                          :map-center-lat lat
-                          :map-center-lng lng
-                          :zoom zoom})))))]
-    (.addEventListener js/document "click" handler)
-    (fn [] (.removeEventListener js/document "click" handler))))
+  (let [mouse-down (atom nil)
+        down-handler (fn [e]
+                       (reset! mouse-down {:x (.-clientX e) :y (.-clientY e)}))
+        click-handler
+        (fn [e]
+          (when-let [{:keys [x y]} @mouse-down]
+            (let [dx (- (.-clientX e) x)
+                  dy (- (.-clientY e) y)
+                  dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))]
+              (when (and (< dist 5)
+                         @!topo-data
+                         (not (.. e -target (closest "#country-overlay"))))
+                (let [{:keys [lat lng zoom]} (parse-maps-url (.-href js/location))
+                      click-lat (screen-y->lat (.-clientY e) lat zoom (.-innerHeight js/window))
+                      click-lng (screen-x->lng (.-clientX e) lng zoom (.-innerWidth js/window))
+                      feature (find-country-at-latlng @!topo-data click-lat click-lng)]
+                  (when feature
+                    (js/console.log "Clicked:" (.. feature -properties -name))
+                    (render-draggable-country!
+                     {:feature feature
+                      :map-center-lat lat
+                      :map-center-lng lng
+                      :zoom zoom})))))))]
+    (.addEventListener js/document "mousedown" down-handler true)
+    (.addEventListener js/document "click" click-handler)
+    (fn []
+      (.removeEventListener js/document "mousedown" down-handler true)
+      (.removeEventListener js/document "click" click-handler))))
 
 (defn render! [country]
   (let [{:keys [lat lng zoom]} (parse-maps-url (.-href js/location))]
@@ -429,6 +453,15 @@
       :map-center-lng lng
       :zoom zoom})))
 
+
+(ensure-topojson-client!
+   (fn []
+     (load-topojson!
+      (fn [data]
+        (js/console.log "Ready!"
+                        (.-length (.. data -objects -countries -geometries))
+                        "countries")))))
+
 ;; Click any country on the map to create its draggable overlay
 ;; Returns a cleanup fn — call it to remove the click handler
 (defonce stop-click-handler! (click-to-drag!))
@@ -437,13 +470,7 @@
 
 (comment
   ;; (Run this after each page navigation — REPL state resets on reload)
-  (ensure-topojson-client!
-   (fn []
-     (load-topojson!
-      (fn [data]
-        (js/console.log "Ready!"
-                        (.-length (.. data -objects -countries -geometries))
-                        "countries")))))
+
 
   (some? @!topo-data)
 
