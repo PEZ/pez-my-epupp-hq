@@ -209,12 +209,14 @@
         ;; cos(original_lat) / cos(shifted_lat), so high-latitude
         ;; features contract east-west when dragged toward the equator.
         deg->rad (/ js/Math.PI 180)
+        max-lat 85.05  ;; Web Mercator limit
+        clamp-lat (fn [lat] (max (- max-lat) (min max-lat lat)))
         project-all
         (fn [delta-lat delta-lng]
           (let [new-center-lng (+ home-center-lng delta-lng)]
             (mapv (fn [ring]
                     (mapv (fn [[lng lat]]
-                            (let [new-lat (+ lat delta-lat)
+                            (let [new-lat (clamp-lat (+ lat delta-lat))
                                   ;; Preserve physical east-west distance
                                   lng-from-center (- lng home-center-lng)
                                   cos-ratio (/ (js/Math.cos (* lat deg->rad))
@@ -380,6 +382,7 @@
   (render! "Brazil")
   (render! "Japan")
   (render! "United States of America")
+  (render! "Algeria")
 
 
   ;; == Explore ==
