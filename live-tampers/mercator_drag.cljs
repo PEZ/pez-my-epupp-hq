@@ -296,6 +296,14 @@
     (.appendChild js/document.body svg)
     svg))
 
+(defn render! [country]
+  (let [{:keys [lat lng zoom]} (parse-maps-url (.-href js/location))]
+      (render-draggable-country!
+       {:feature (find-country-feature @!topo-data country)
+        :map-center-lat lat
+        :map-center-lng lng
+        :zoom zoom})))
+
 ;; === Rich Comment Forms ===
 
 (comment
@@ -322,27 +330,11 @@
   ;; == Step 3: Render a draggable country ==
   ;; Uses the current map center/zoom from the URL.
   ;; Drag the shape to different latitudes to see Mercator rescaling!
-  (let [{:keys [lat lng zoom]} (parse-maps-url (.-href js/location))]
-    (render-draggable-country!
-     {:feature (find-country-feature @!topo-data "Sweden")
-      :map-center-lat lat
-      :map-center-lng lng
-      :zoom zoom}))
+  (render! "Sweden")
+  (render! "Brazil")
+  (render! "Japan")
+  (render! "United States of America")
 
-  ;; Try other countries — flag colors are automatic!
-  (let [{:keys [lat lng zoom]} (parse-maps-url (.-href js/location))]
-    (render-draggable-country!
-     {:feature (find-country-feature @!topo-data "Brazil")
-      :map-center-lat lat
-      :map-center-lng lng
-      :zoom zoom}))
-
-  (let [{:keys [lat lng zoom]} (parse-maps-url (.-href js/location))]
-    (render-draggable-country!
-     {:feature (find-country-feature @!topo-data "Japan")
-      :map-center-lat lat
-      :map-center-lng lng
-      :zoom zoom}))
 
   ;; == Explore ==
   (let [geometries (.. @!topo-data -objects -countries -geometries)]
