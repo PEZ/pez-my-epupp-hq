@@ -34,14 +34,12 @@
 
 ;; -- Forward declaration for dispatch (only legitimate use) --
 
-(defonce !mouse (atom {:x nil :y nil}))
-
 (declare dispatch!)
 
 ;; -- Effects (imperative shell — no @!state reads) --
 
 (defn perform-effect!
-  "Execute a side effect. Returns a value for :uf/prev-result threading."
+  "Execute a side effect described by an effect vector."
   [effect]
   (let [[op & args] effect]
     (case op
@@ -109,9 +107,9 @@
                       (let [now (js/Date.now)]
                         (when (> (- now @!last-move) 200)
                           (reset! !last-move now)
-                          (swap! !mouse assoc :x (.-clientX e) :y (.-clientY e)))))]
+                          (dispatch! [[:buddy/ax.assoc :mouse-x (.-clientX e) :mouse-y (.-clientY e)]]))))]
         (.addEventListener js/document "mousemove" handler)
-        (swap! !mouse assoc :handler handler)
+        (dispatch! [[:buddy/ax.assoc :mouse-handler handler]])
         nil)
 
       :dom/fx.remove-mouse-tracker
@@ -124,7 +122,7 @@
       (let [handler (fn [e]
                       (dispatch! [[:buddy/ax.react-to-click (.-clientX e) (.-clientY e)]]))]
         (.addEventListener js/document "click" handler)
-        (swap! !mouse assoc :click-handler handler)
+        (dispatch! [[:buddy/ax.assoc :click-handler handler]])
         nil)
 
       :dom/fx.remove-click-tracker
@@ -146,7 +144,7 @@
                         (when (and (> dy 500) (< dt 200))
                           (dispatch! [[:buddy/ax.enter-state :being-hit]]))))]
         (.addEventListener js/window "scroll" handler #js {:passive true})
-        (swap! !mouse assoc :scroll-handler handler)
+        (dispatch! [[:buddy/ax.assoc :scroll-handler handler]])
         nil)
 
       :dom/fx.remove-scroll-tracker
@@ -372,6 +370,9 @@
   (let [[op & args] action
         now (:system/now uf-data)]
     (case op
+      :buddy/ax.assoc
+      {:uf/db (apply assoc state args)}
+
       :buddy/ax.init
       (let [[dom-refs] args
             init-x 100
@@ -499,11 +500,10 @@
                  :uf/fxs (facing-fxs el face-dir)})))))
 
       :buddy/ax.stop
-      (let [{:keys [raf-id container]} state
-            {:keys [handler click-handler scroll-handler]} @!mouse]
+      (let [{:keys [raf-id container mouse-handler click-handler scroll-handler]} state]
         {:uf/db nil
          :uf/fxs [[:dom/fx.cancel-raf raf-id]
-                  [:dom/fx.remove-mouse-tracker handler]
+                  [:dom/fx.remove-mouse-tracker mouse-handler]
                   [:dom/fx.remove-click-tracker click-handler]
                   [:dom/fx.remove-scroll-tracker scroll-handler]
                   [:dom/fx.remove-element container]
@@ -525,8 +525,8 @@
       (let [action (first remaining)
             result (handle-action state {:system/now (js/Date.now)
                                          :roll (rand)
-                                         :mouse/x (:x @!mouse)
-                                         :mouse/y (:y @!mouse)}
+                                         :mouse/x (:mouse-x state)
+                                         :mouse/y (:mouse-y state)}
                                   action)
             new-state (if (and (map? result) (contains? result :uf/db))
                         (:uf/db result)
@@ -567,11 +567,10 @@
         (when (seq actions)
           (dispatch! actions))
         (when @!state
-          (swap! !state assoc :raf-id (js/requestAnimationFrame raf-cb)))))))
+          (dispatch! [[:buddy/ax.assoc :raf-id (js/requestAnimationFrame raf-cb)]]))))))
 
 (defn stop! []
-  (dispatch! [[:buddy/ax.stop]])
-  (reset! !mouse {:x nil :y nil}))
+  (dispatch! [[:buddy/ax.stop]]))
 
 (defn start! []
   (when (:raf-id @!state) (stop!))
@@ -584,7 +583,7 @@
     (dispatch! [[:buddy/ax.init {:el el :container container}]])
     (let [raf-cb (make-raf-loop)
           raf-id (js/requestAnimationFrame raf-cb)]
-      (swap! !state assoc :raf-id raf-id))
+      (dispatch! [[:buddy/ax.assoc :raf-id raf-id]]))
     (js/console.log "Page buddy started! 🐱")))
 
 (comment
@@ -598,5 +597,5 @@
   (dispatch! [[:buddy/ax.enter-state :meowing]])
   (dispatch! [[:buddy/ax.enter-state :touching]])
   @!state
-  @!mouse
+  (select-keys @!state [:mouse-x :mouse-y])
   :rcf)
