@@ -22,10 +22,30 @@
 
 ;; -- Helpers --
 
+(def energy-rates
+  {:walking  -0.002
+   :running  -0.004
+   :jumping  -0.003
+   :falling  -0.001
+   :sitting   0.003
+   :sleeping  0.005
+   :idle      0.001
+   :meowing   0.0
+   :touching  0.0
+   :being-hit -0.005
+   :stunned   0.0
+   :landing   0.0})
+
 (defn rand-between [lo hi]
   (+ lo (rand-int (- hi lo))))
 
 ;; -- State (single access point: dispatch!) --
+
+(defn update-energy
+  "Pure energy update. Returns new energy clamped to [0.0, 1.0]."
+  [energy buddy-state]
+  (let [rate (get energy-rates buddy-state 0.0)]
+    (max 0.0 (min 1.0 (+ energy rate)))))
 
 (defn floor-y []
   (- js/window.innerHeight 40 (* (:h sprites/frame-size) (:scale config))))
@@ -217,15 +237,26 @@
   [[:dom/fx.set-transform container x y]])
 
 (defn pick-next-behavior
-  "Pure behavior selection from a random roll."
-  [roll]
-  (let [{:keys [sit-chance meow-chance touch-chance jump-chance]} config]
-    (cond
-      (< roll sit-chance) :sitting
-      (< roll (+ sit-chance meow-chance)) :meowing
-      (< roll (+ sit-chance meow-chance touch-chance)) :touching
-      (< roll (+ sit-chance meow-chance touch-chance jump-chance)) :jumping
-      :else (if (< (rand) (:run-chance config)) :running :walking))))
+  "Energy-weighted behavior selection from a random roll."
+  [energy roll]
+  (let [rest-bias (- 1.0 energy)
+        active-bias energy
+        weights {:sitting  (* 0.25 rest-bias)
+                 :sleeping (if (< energy 0.2) (* 0.3 rest-bias) 0.0)
+                 :meowing  0.12
+                 :touching 0.08
+                 :jumping  (* 0.10 active-bias)
+                 :running  (* 0.20 active-bias)
+                 :walking  (* 0.30 active-bias)}
+        total (reduce + (vals weights))
+        normalized (reduce-kv (fn [m k v] (assoc m k (/ v total))) {} weights)
+        ordered [:sitting :sleeping :meowing :touching :jumping :running :walking]
+        cumulative (reductions + (map #(get normalized %) ordered))]
+    (or (first (keep-indexed
+                (fn [i cum]
+                  (when (< roll cum) (nth ordered i)))
+                cumulative))
+        :walking)))
 
 ;; -- Actions (pure: state + uf-data + action → result) --
 
@@ -254,8 +285,10 @@
          :uf/fxs (anim-fxs el :idle)})
 
       :walking
-      (let [[lo hi] (:walk-duration config)
-            duration (rand-between lo hi)
+      (let [energy (or (:energy state) 0.8)
+            scale (+ 0.3 (* 0.7 energy))
+            [lo hi] (:walk-duration config)
+            duration (rand-between (int (* lo scale)) (int (* hi scale)))
             new-facing (if (< (:roll uf-data) 0.5) :left :right)]
         {:uf/db (assoc base-db
                        :state-end (+ now duration)
@@ -264,8 +297,10 @@
                        (facing-fxs el new-facing))})
 
       :running
-      (let [[lo hi] (:walk-duration config)
-            duration (rand-between lo hi)
+      (let [energy (or (:energy state) 0.8)
+            scale (+ 0.3 (* 0.7 energy))
+            [lo hi] (:walk-duration config)
+            duration (rand-between (int (* lo scale)) (int (* hi scale)))
             new-facing (if (< (:roll uf-data) 0.5) :left :right)]
         {:uf/db (assoc base-db
                        :state-end (+ now duration)
@@ -385,7 +420,8 @@
                         :frame-count 0
                         :current-anim nil
                         :x init-x
-                        :y init-y})
+                        :y init-y
+                        :energy 0.8})
          :uf/fxs [[:dom/fx.inject-css (make-sprite-css)]
                   [:dom/fx.set-transform (:container dom-refs) init-x init-y]
                   [:dom/fx.add-click-handler (:el dom-refs)]
@@ -430,53 +466,59 @@
                        (str "-" offset "px 0")]]})))
 
       :buddy/ax.tick
-      (let [{:keys [buddy-state state-end state-timer]} state]
-        (case buddy-state
-          :idle
-          (if (and state-end (> now state-end))
-            {:uf/dxs [[:buddy/ax.enter-state (pick-next-behavior (:roll uf-data))]]}
-            (mouse-facing-fxs state uf-data))
+      (let [state (assoc state :energy (update-energy (or (:energy state) 0.8) (:buddy-state state)))
+            {:keys [buddy-state state-end state-timer]} state
+            behavior-result
+            (case buddy-state
+              :idle
+              (if (and state-end (> now state-end))
+                {:uf/dxs [[:buddy/ax.enter-state (pick-next-behavior (or (:energy state) 0.8) (:roll uf-data))]]}
+                (mouse-facing-fxs state uf-data))
 
-          :walking
-          (tick-walking state now)
+              :walking
+              (tick-walking state now)
 
-          :running
-          (tick-walking state now)
+              :running
+              (tick-walking state now)
 
-          (:jumping :falling)
-          (tick-jumping state)
+              (:jumping :falling)
+              (tick-jumping state)
 
-          :landing
-          (when (and state-end (> now state-end))
-            {:uf/dxs [[:buddy/ax.enter-state :idle]]})
+              :landing
+              (when (and state-end (> now state-end))
+                {:uf/dxs [[:buddy/ax.enter-state :idle]]})
 
-          :being-hit
-          (when (and state-end (> now state-end))
-            {:uf/dxs [[:buddy/ax.enter-state :stunned]]})
+              :being-hit
+              (when (and state-end (> now state-end))
+                {:uf/dxs [[:buddy/ax.enter-state :stunned]]})
 
-          :stunned
-          (when (and state-end (> now state-end))
-            {:uf/dxs [[:buddy/ax.enter-state :idle]]})
+              :stunned
+              (when (and state-end (> now state-end))
+                {:uf/dxs [[:buddy/ax.enter-state :idle]]})
 
-          :sitting
-          (let [sit-frames (get-in sprites/animations [:sit :frames])
-                elapsed (- now state-timer)]
-            (when (> elapsed (* sit-frames (/ 1000 (:fps config))))
-              {:uf/dxs [[:buddy/ax.enter-state :sleeping]]}))
+              :sitting
+              (let [sit-frames (get-in sprites/animations [:sit :frames])
+                    elapsed (- now state-timer)]
+                (when (> elapsed (* sit-frames (/ 1000 (:fps config))))
+                  {:uf/dxs [[:buddy/ax.enter-state :sleeping]]}))
 
-          :sleeping
-          (when (and state-end (> now state-end))
-            {:uf/dxs [[:buddy/ax.enter-state :idle]]})
+              :sleeping
+              (when (and state-end (> now state-end))
+                {:uf/dxs [[:buddy/ax.enter-state :idle]]})
 
-          :meowing
-          (when (and state-end (> now state-end))
-            {:uf/dxs [[:buddy/ax.enter-state :idle]]})
+              :meowing
+              (when (and state-end (> now state-end))
+                {:uf/dxs [[:buddy/ax.enter-state :idle]]})
 
-          :touching
-          (when (and state-end (> now state-end))
-            {:uf/dxs [[:buddy/ax.enter-state :idle]]})
+              :touching
+              (when (and state-end (> now state-end))
+                {:uf/dxs [[:buddy/ax.enter-state :idle]]})
 
-          nil))
+              nil)]
+        ;; Always persist energy update, merge with behavior result
+        (if behavior-result
+          (update behavior-result :uf/db #(or % state))
+          {:uf/db state}))
 
       :buddy/ax.react-to-click
       (let [[click-x click-y] args
