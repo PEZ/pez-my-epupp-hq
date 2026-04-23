@@ -32,6 +32,8 @@
 
 (defonce !state (atom nil))
 
+(defonce !env (atom {:mouse-x nil :mouse-y nil :scroll-y 0}))
+
 ;; -- Forward declaration for dispatch (only legitimate use) --
 
 (declare dispatch!)
@@ -107,9 +109,9 @@
                       (let [now (js/Date.now)]
                         (when (> (- now @!last-move) 200)
                           (reset! !last-move now)
-                          (dispatch! [[:buddy/ax.assoc :mouse-x (.-clientX e) :mouse-y (.-clientY e)]]))))]
+                          (swap! !env assoc :mouse-x (.-clientX e) :mouse-y (.-clientY e)))))]
         (.addEventListener js/document "mousemove" handler)
-        (dispatch! [[:buddy/ax.assoc :mouse-handler handler]])
+        (swap! !env assoc :mouse-handler handler)
         nil)
 
       :dom/fx.remove-mouse-tracker
@@ -122,7 +124,7 @@
       (let [handler (fn [e]
                       (dispatch! [[:buddy/ax.react-to-click (.-clientX e) (.-clientY e)]]))]
         (.addEventListener js/document "click" handler)
-        (dispatch! [[:buddy/ax.assoc :click-handler handler]])
+        (swap! !env assoc :click-handler handler)
         nil)
 
       :dom/fx.remove-click-tracker
@@ -132,19 +134,15 @@
         nil)
 
       :dom/fx.add-scroll-tracker
-      (let [!last-scroll-y (atom (.-scrollY js/window))
-            !last-scroll-time (atom (js/Date.now))
-            handler (fn []
-                      (let [now (js/Date.now)
-                            curr-y (.-scrollY js/window)
-                            dt (- now @!last-scroll-time)
-                            dy (js/Math.abs (- curr-y @!last-scroll-y))]
-                        (reset! !last-scroll-y curr-y)
-                        (reset! !last-scroll-time now)
-                        (when (and (> dy 500) (< dt 200))
+      (let [handler (fn []
+                      (let [curr-y (.-scrollY js/window)
+                            prev-y (:scroll-y @!env 0)
+                            dy (js/Math.abs (- curr-y prev-y))]
+                        (swap! !env assoc :scroll-y curr-y)
+                        (when (> dy 500)
                           (dispatch! [[:buddy/ax.enter-state :being-hit]]))))]
         (.addEventListener js/window "scroll" handler #js {:passive true})
-        (dispatch! [[:buddy/ax.assoc :scroll-handler handler]])
+        (swap! !env assoc :scroll-handler handler)
         nil)
 
       :dom/fx.remove-scroll-tracker
@@ -164,6 +162,9 @@
 
       :log/fx.log
       (do (apply js/console.log args) nil)
+
+      :env/fx.reset
+      (do (reset! !env {:mouse-x nil :mouse-y nil :scroll-y 0}) nil)
 
       (do (js/console.warn "Unhandled effect:" (pr-str effect)) nil))))
 
@@ -500,14 +501,15 @@
                  :uf/fxs (facing-fxs el face-dir)})))))
 
       :buddy/ax.stop
-      (let [{:keys [raf-id container mouse-handler click-handler scroll-handler]} state]
+      (let [{:keys [raf-id container]} state]
         {:uf/db nil
          :uf/fxs [[:dom/fx.cancel-raf raf-id]
-                  [:dom/fx.remove-mouse-tracker mouse-handler]
-                  [:dom/fx.remove-click-tracker click-handler]
-                  [:dom/fx.remove-scroll-tracker scroll-handler]
+                  [:dom/fx.remove-mouse-tracker (:env/mouse-handler uf-data)]
+                  [:dom/fx.remove-click-tracker (:env/click-handler uf-data)]
+                  [:dom/fx.remove-scroll-tracker (:env/scroll-handler uf-data)]
                   [:dom/fx.remove-element container]
-                  [:log/fx.log "Page buddy stopped."]]})
+                  [:log/fx.log "Page buddy stopped."]
+                  [:env/fx.reset]]})
 
       (do (js/console.warn "Unhandled action:" (pr-str action))
           nil))))
@@ -517,33 +519,38 @@
 (defn dispatch!
   "The single access point for state. Only place that reads/writes !state."
   [actions]
-  (loop [remaining (seq actions)
-         state @!state
-         all-fxs []
-         all-dxs []]
-    (if remaining
-      (let [action (first remaining)
-            result (handle-action state {:system/now (js/Date.now)
-                                         :roll (rand)
-                                         :mouse/x (:mouse-x state)
-                                         :mouse/y (:mouse-y state)}
-                                  action)
-            new-state (if (and (map? result) (contains? result :uf/db))
-                        (:uf/db result)
-                        state)
-            fxs (when (map? result) (:uf/fxs result))
-            dxs (when (map? result) (:uf/dxs result))]
-        (recur (next remaining)
-               new-state
-               (into all-fxs fxs)
-               (into all-dxs dxs)))
-      (do
-        (reset! !state state)
-        (doseq [fx all-fxs]
-          (when fx
-            (perform-effect! fx)))
-        (when (seq all-dxs)
-          (dispatch! all-dxs))))))
+  (let [env @!env]
+    (loop [remaining (seq actions)
+           state @!state
+           all-fxs []
+           all-dxs []]
+      (if remaining
+        (let [action (first remaining)
+              result (handle-action state {:system/now (js/Date.now)
+                                           :roll (rand)
+                                           :mouse/x (:mouse-x env)
+                                           :mouse/y (:mouse-y env)
+                                           :scroll/y (:scroll-y env)
+                                           :env/mouse-handler (:mouse-handler env)
+                                           :env/click-handler (:click-handler env)
+                                           :env/scroll-handler (:scroll-handler env)}
+                                    action)
+              new-state (if (and (map? result) (contains? result :uf/db))
+                          (:uf/db result)
+                          state)
+              fxs (when (map? result) (:uf/fxs result))
+              dxs (when (map? result) (:uf/dxs result))]
+          (recur (next remaining)
+                 new-state
+                 (into all-fxs fxs)
+                 (into all-dxs dxs)))
+        (do
+          (reset! !state state)
+          (doseq [fx all-fxs]
+            (when fx
+              (perform-effect! fx)))
+          (when (seq all-dxs)
+            (dispatch! all-dxs)))))))
 
 ;; -- Lifecycle (entry points dispatch actions only) --
 
@@ -597,5 +604,6 @@
   (dispatch! [[:buddy/ax.enter-state :meowing]])
   (dispatch! [[:buddy/ax.enter-state :touching]])
   @!state
-  (select-keys @!state [:mouse-x :mouse-y])
+  @!env
+  (select-keys @!env [:mouse-x :mouse-y])
   :rcf)
