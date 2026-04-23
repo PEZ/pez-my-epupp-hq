@@ -13,7 +13,12 @@
    :sit-chance 0.3
    :sleep-delay 5000
    :meow-chance 0.15
-   :touch-chance 0.1})
+   :touch-chance 0.1
+   :run-chance 0.3
+   :jump-chance 0.08
+   :gravity 0.5
+   :terminal-vel 12
+   :jump-vy -8})
 
 ;; -- Helpers --
 
@@ -85,6 +90,17 @@
         (when id (js/cancelAnimationFrame id))
         nil)
 
+      :dom/fx.add-click-handler
+      (let [[node] args]
+        (when node
+          (set! (.-pointerEvents (.-style node)) "auto")
+          (set! (.-cursor (.-style node)) "pointer")
+          (.addEventListener node "click"
+                             (fn [e]
+                               (.stopPropagation e)
+                               (dispatch! [[:buddy/ax.enter-state :being-hit]]))))
+        nil)
+
       :timer/fx.set-interval
       (let [[callback-action ms] args]
         (js/setInterval (fn [] (dispatch! [callback-action])) ms))
@@ -150,12 +166,13 @@
 (defn pick-next-behavior
   "Pure behavior selection from a random roll."
   [roll]
-  (let [{:keys [sit-chance meow-chance touch-chance]} config]
+  (let [{:keys [sit-chance meow-chance touch-chance jump-chance]} config]
     (cond
       (< roll sit-chance) :sitting
       (< roll (+ sit-chance meow-chance)) :meowing
       (< roll (+ sit-chance meow-chance touch-chance)) :touching
-      :else :walking)))
+      (< roll (+ sit-chance meow-chance touch-chance jump-chance)) :jumping
+      :else (if (< (rand) (:run-chance config)) :running :walking))))
 
 ;; -- Actions (pure: state + uf-data + action → result) --
 
@@ -181,6 +198,40 @@
                        :facing new-facing)
          :uf/fxs (into (anim-fxs el :walk)
                        (facing-fxs el new-facing))})
+
+      :running
+      (let [[lo hi] (:walk-duration config)
+            duration (rand-between lo hi)
+            new-facing (if (< (:roll uf-data) 0.5) :left :right)]
+        {:uf/db (assoc base-db
+                       :state-end (+ now duration)
+                       :facing new-facing)
+         :uf/fxs (into (anim-fxs el :run)
+                       (facing-fxs el new-facing))})
+
+      :jumping
+      (let [vx (if (= (:facing state) :right)
+                 (* 0.5 (:walk-speed config))
+                 (* -0.5 (:walk-speed config)))
+            vy (:jump-vy config)]
+        {:uf/db (assoc base-db :vx vx :vy vy)
+         :uf/fxs (anim-fxs el :jump)})
+
+      :falling
+      {:uf/db (assoc base-db :vx 0 :vy 0)
+       :uf/fxs (anim-fxs el :jump)}
+
+      :landing
+      {:uf/db (assoc base-db :state-end (+ now 500))
+       :uf/fxs (anim-fxs el :stunned)}
+
+      :being-hit
+      {:uf/db (assoc base-db :state-end (+ now 400))
+       :uf/fxs (anim-fxs el :being-hit)}
+
+      :stunned
+      {:uf/db (assoc base-db :state-end (+ now 800))
+       :uf/fxs (anim-fxs el :stunned)}
 
       :sitting
       {:uf/db base-db
@@ -228,6 +279,28 @@
       (update move-result :uf/dxs (fnil conj []) [:buddy/ax.enter-state :idle])
       move-result)))
 
+(defn tick-jumping
+  "Pure jumping/falling tick with gravity."
+  [state]
+  (let [{:keys [x y vx vy container]} state
+        gravity (:gravity config)
+        terminal-vel (:terminal-vel config)
+        new-vy (min (+ vy gravity) terminal-vel)
+        new-x (+ x vx)
+        new-y (+ y new-vy)
+        max-x (- js/window.innerWidth (* (:w sprites/frame-size) (:scale config)))
+        fy (floor-y)
+        clamped-x (max 0 (min new-x max-x))]
+    (if (>= new-y fy)
+      ;; Landed
+      (let [land-state (if (> new-vy 6) :stunned :idle)]
+        {:uf/db (assoc state :x clamped-x :y fy :vx 0 :vy 0)
+         :uf/fxs (position-fxs container clamped-x fy)
+         :uf/dxs [[:buddy/ax.enter-state land-state]]})
+      ;; Still airborne
+      {:uf/db (assoc state :x clamped-x :y new-y :vx vx :vy new-vy)
+       :uf/fxs (position-fxs container clamped-x new-y)})))
+
 (defn handle-action
   "Pure action handler. Returns {:uf/db :uf/fxs :uf/dxs} or nil."
   [state uf-data action]
@@ -247,7 +320,8 @@
                         :x init-x
                         :y init-y})
          :uf/fxs [[:dom/fx.inject-css (make-sprite-css)]
-                  [:dom/fx.set-transform (:container dom-refs) init-x init-y]]
+                  [:dom/fx.set-transform (:container dom-refs) init-x init-y]
+                  [:dom/fx.add-click-handler (:el dom-refs)]]
          :uf/dxs [[:buddy/ax.enter-state :idle]]})
 
       :buddy/ax.enter-state
@@ -256,6 +330,12 @@
             anim-key (case new-bstate
                        :idle :idle
                        :walking :walk
+                       :running :run
+                       :jumping :jump
+                       :falling :jump
+                       :landing :stunned
+                       :being-hit :being-hit
+                       :stunned :stunned
                        :sitting :sit
                        :sleeping :sleep
                        :meowing :meow
@@ -288,6 +368,24 @@
 
           :walking
           (tick-walking state now)
+
+          :running
+          (tick-walking state now)
+
+          (:jumping :falling)
+          (tick-jumping state)
+
+          :landing
+          (when (and state-end (> now state-end))
+            {:uf/dxs [[:buddy/ax.enter-state :idle]]})
+
+          :being-hit
+          (when (and state-end (> now state-end))
+            {:uf/dxs [[:buddy/ax.enter-state :stunned]]})
+
+          :stunned
+          (when (and state-end (> now state-end))
+            {:uf/dxs [[:buddy/ax.enter-state :idle]]})
 
           :sitting
           (let [sit-frames (get-in sprites/animations [:sit :frames])
@@ -395,6 +493,9 @@
   (start!)
   (stop!)
   (dispatch! [[:buddy/ax.enter-state :walking]])
+  (dispatch! [[:buddy/ax.enter-state :running]])
+  (dispatch! [[:buddy/ax.enter-state :jumping]])
+  (dispatch! [[:buddy/ax.enter-state :being-hit]])
   (dispatch! [[:buddy/ax.enter-state :sitting]])
   (dispatch! [[:buddy/ax.enter-state :meowing]])
   (dispatch! [[:buddy/ax.enter-state :touching]])
