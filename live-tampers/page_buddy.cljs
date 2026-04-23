@@ -34,6 +34,8 @@
 
 ;; -- Forward declaration for dispatch (only legitimate use) --
 
+(defonce !mouse (atom {:x nil :y nil}))
+
 (declare dispatch!)
 
 ;; -- Effects (imperative shell — no @!state reads) --
@@ -99,6 +101,58 @@
                              (fn [e]
                                (.stopPropagation e)
                                (dispatch! [[:buddy/ax.enter-state :being-hit]]))))
+        nil)
+
+      :dom/fx.add-mouse-tracker
+      (let [!last-move (atom 0)
+            handler (fn [e]
+                      (let [now (js/Date.now)]
+                        (when (> (- now @!last-move) 200)
+                          (reset! !last-move now)
+                          (swap! !mouse assoc :x (.-clientX e) :y (.-clientY e)))))]
+        (.addEventListener js/document "mousemove" handler)
+        (swap! !mouse assoc :handler handler)
+        nil)
+
+      :dom/fx.remove-mouse-tracker
+      (let [[handler] args]
+        (when handler
+          (.removeEventListener js/document "mousemove" handler))
+        nil)
+
+      :dom/fx.add-click-tracker
+      (let [handler (fn [e]
+                      (dispatch! [[:buddy/ax.react-to-click (.-clientX e) (.-clientY e)]]))]
+        (.addEventListener js/document "click" handler)
+        (swap! !mouse assoc :click-handler handler)
+        nil)
+
+      :dom/fx.remove-click-tracker
+      (let [[handler] args]
+        (when handler
+          (.removeEventListener js/document "click" handler))
+        nil)
+
+      :dom/fx.add-scroll-tracker
+      (let [!last-scroll-y (atom (.-scrollY js/window))
+            !last-scroll-time (atom (js/Date.now))
+            handler (fn []
+                      (let [now (js/Date.now)
+                            curr-y (.-scrollY js/window)
+                            dt (- now @!last-scroll-time)
+                            dy (js/Math.abs (- curr-y @!last-scroll-y))]
+                        (reset! !last-scroll-y curr-y)
+                        (reset! !last-scroll-time now)
+                        (when (and (> dy 500) (< dt 200))
+                          (dispatch! [[:buddy/ax.enter-state :being-hit]]))))]
+        (.addEventListener js/window "scroll" handler #js {:passive true})
+        (swap! !mouse assoc :scroll-handler handler)
+        nil)
+
+      :dom/fx.remove-scroll-tracker
+      (let [[handler] args]
+        (when handler
+          (.removeEventListener js/window "scroll" handler))
         nil)
 
       :timer/fx.set-interval
@@ -175,6 +229,17 @@
       :else (if (< (rand) (:run-chance config)) :running :walking))))
 
 ;; -- Actions (pure: state + uf-data + action → result) --
+
+(defn mouse-facing-fxs
+  "Returns facing update map if mouse position suggests different facing, nil otherwise."
+  [state uf-data]
+  (let [mouse-x (:mouse/x uf-data)]
+    (when (and mouse-x (:x state) (:el state))
+      (let [cat-center-x (+ (:x state) (/ (* (:w sprites/frame-size) (:scale config)) 2))
+            should-face (if (< mouse-x cat-center-x) :left :right)]
+        (when (not= should-face (:facing state))
+          {:uf/db (assoc state :facing should-face)
+           :uf/fxs (facing-fxs (:el state) should-face)})))))
 
 (defn enter-state-action
   "Pure state transition. Returns {:uf/db :uf/fxs}."
@@ -321,7 +386,10 @@
                         :y init-y})
          :uf/fxs [[:dom/fx.inject-css (make-sprite-css)]
                   [:dom/fx.set-transform (:container dom-refs) init-x init-y]
-                  [:dom/fx.add-click-handler (:el dom-refs)]]
+                  [:dom/fx.add-click-handler (:el dom-refs)]
+                  [:dom/fx.add-mouse-tracker]
+                  [:dom/fx.add-click-tracker]
+                  [:dom/fx.add-scroll-tracker]]
          :uf/dxs [[:buddy/ax.enter-state :idle]]})
 
       :buddy/ax.enter-state
@@ -363,8 +431,9 @@
       (let [{:keys [buddy-state state-end state-timer]} state]
         (case buddy-state
           :idle
-          (when (and state-end (> now state-end))
-            {:uf/dxs [[:buddy/ax.enter-state (pick-next-behavior (:roll uf-data))]]})
+          (if (and state-end (> now state-end))
+            {:uf/dxs [[:buddy/ax.enter-state (pick-next-behavior (:roll uf-data))]]}
+            (mouse-facing-fxs state uf-data))
 
           :walking
           (tick-walking state now)
@@ -407,10 +476,36 @@
 
           nil))
 
+      :buddy/ax.react-to-click
+      (let [[click-x click-y] args
+            {:keys [x y buddy-state el]} state
+            cat-center-x (+ x (/ (* (:w sprites/frame-size) (:scale config)) 2))
+            dx (- click-x cat-center-x)
+            dy (- click-y (+ y (/ (* (:h sprites/frame-size) (:scale config)) 2)))
+            dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))
+            ground-state? (contains? #{:idle :walking :running :sitting :meowing :touching} buddy-state)]
+        (when ground-state?
+          (cond
+            (and (< dist 200) (< (rand) 0.3))
+            (let [run-facing (if (pos? dx) :left :right)]
+              {:uf/db (assoc state :facing run-facing)
+               :uf/fxs (facing-fxs el run-facing)
+               :uf/dxs [[:buddy/ax.enter-state :being-hit]]})
+
+            (< dist 500)
+            (let [face-dir (if (pos? dx) :right :left)]
+              (when (not= face-dir (:facing state))
+                {:uf/db (assoc state :facing face-dir)
+                 :uf/fxs (facing-fxs el face-dir)})))))
+
       :buddy/ax.stop
-      (let [{:keys [raf-id container]} state]
+      (let [{:keys [raf-id container]} state
+            {:keys [handler click-handler scroll-handler]} @!mouse]
         {:uf/db nil
          :uf/fxs [[:dom/fx.cancel-raf raf-id]
+                  [:dom/fx.remove-mouse-tracker handler]
+                  [:dom/fx.remove-click-tracker click-handler]
+                  [:dom/fx.remove-scroll-tracker scroll-handler]
                   [:dom/fx.remove-element container]
                   [:log/fx.log "Page buddy stopped."]]})
 
@@ -429,7 +524,9 @@
     (if remaining
       (let [action (first remaining)
             result (handle-action state {:system/now (js/Date.now)
-                                         :roll (rand)}
+                                         :roll (rand)
+                                         :mouse/x (:x @!mouse)
+                                         :mouse/y (:y @!mouse)}
                                   action)
             new-state (if (and (map? result) (contains? result :uf/db))
                         (:uf/db result)
@@ -473,7 +570,8 @@
           (swap! !state assoc :raf-id (js/requestAnimationFrame raf-cb)))))))
 
 (defn stop! []
-  (dispatch! [[:buddy/ax.stop]]))
+  (dispatch! [[:buddy/ax.stop]])
+  (reset! !mouse {:x nil :y nil}))
 
 (defn start! []
   (when (:raf-id @!state) (stop!))
@@ -500,4 +598,5 @@
   (dispatch! [[:buddy/ax.enter-state :meowing]])
   (dispatch! [[:buddy/ax.enter-state :touching]])
   @!state
+  @!mouse
   :rcf)
