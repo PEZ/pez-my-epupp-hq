@@ -1,3 +1,7 @@
+;; NOTE: This file is synced from the Epupp repository
+;;   https://github.com/PEZ/epupp — `test-data/tampers/fs_api_exercise.cljs`
+;;   To resync: `bb exercises-sync`
+
 (ns fs-api-exercise
   (:require epupp.fs))
 

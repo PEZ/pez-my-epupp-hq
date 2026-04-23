@@ -16,4 +16,7 @@
                                                                       :websocket-port :int}}))}
 
   docs-sync {:doc "Sync docs from the epupp GitHub repository"
-             :task (tasks/docs-sync)}}}
+             :task (tasks/docs-sync)}
+
+  exercises-sync {:doc "Sync exercise files from the epupp GitHub repository"
+                  :task (tasks/exercises-sync)}}}
