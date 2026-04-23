@@ -22,6 +22,9 @@
 
 ;; -- State (single access point: dispatch!) --
 
+(defn floor-y []
+  (- js/window.innerHeight 40 (* (:h sprites/frame-size) (:scale config))))
+
 (defonce !state (atom nil))
 
 ;; -- Forward declaration for dispatch (only legitimate use) --
@@ -70,6 +73,18 @@
             (.remove (.-classList node) class-name)))
         nil)
 
+      :dom/fx.set-transform
+      (let [[node x y] args]
+        (when node
+          (aset (.-style node) "transform"
+                (str "translate3d(" x "px," y "px,0)")))
+        nil)
+
+      :dom/fx.cancel-raf
+      (let [[id] args]
+        (when id (js/cancelAnimationFrame id))
+        nil)
+
       :timer/fx.set-interval
       (let [[callback-action ms] args]
         (js/setInterval (fn [] (dispatch! [callback-action])) ms))
@@ -92,8 +107,9 @@
     (str
      "#page-buddy-container {"
      "  position: fixed;"
-     "  bottom: 40px;"
-     "  left: 100px;"
+     "  top: 0;"
+     "  left: 0;"
+     "  will-change: transform;"
      "  z-index: 2147483647;"
      "  pointer-events: none;"
      "  image-rendering: pixelated;"
@@ -108,6 +124,7 @@
      "#page-buddy.facing-left {"
      "  transform: scaleX(-1);"
      "}")))
+
 
 (defn anim-fxs
   "Effect vectors to apply a sprite animation to an element."
@@ -124,6 +141,11 @@
   "Effect vectors to set facing direction on an element."
   [el direction]
   [[:dom/fx.set-class el "facing-left" (= direction :left)]])
+
+(defn position-fxs
+  "Effect vectors to update container position via translate3d."
+  [container x y]
+  [[:dom/fx.set-transform container x y]])
 
 (defn pick-next-behavior
   "Pure behavior selection from a random roll."
@@ -180,31 +202,28 @@
 
 (defn tick-walking
   "Pure walking tick logic."
-  [state now el]
-  (let [{:keys [facing container current-anim state-end]} state
-        x (js/parseFloat (.. container -style -left))
-        speed (if (= current-anim :run)
-                (:run-speed config)
-                (:walk-speed config))
+  [state now]
+  (let [{:keys [x y facing container el current-anim state-end]} state
+        speed (if (= current-anim :run) (:run-speed config) (:walk-speed config))
         dx (if (= facing :left) (- speed) speed)
         new-x (+ x dx)
-        max-x (- js/window.innerWidth
-                 (* (:w sprites/frame-size) (:scale config)))
+        max-x (- js/window.innerWidth (* (:w sprites/frame-size) (:scale config)))
         move-result (cond
                       (< new-x 0)
-                      {:uf/db (assoc state :facing :right)
-                       :uf/fxs (into [[:dom/fx.set-style container "left" "0px"]]
+                      {:uf/db (assoc state :x 0 :facing :right)
+                       :uf/fxs (into (position-fxs container 0 y)
                                      (facing-fxs el :right))
                        :uf/dxs [[:buddy/ax.enter-state :idle]]}
 
                       (> new-x max-x)
-                      {:uf/db (assoc state :facing :left)
-                       :uf/fxs (into [[:dom/fx.set-style container "left" (str max-x "px")]]
+                      {:uf/db (assoc state :x max-x :facing :left)
+                       :uf/fxs (into (position-fxs container max-x y)
                                      (facing-fxs el :left))
                        :uf/dxs [[:buddy/ax.enter-state :idle]]}
 
                       :else
-                      {:uf/fxs [[:dom/fx.set-style container "left" (str new-x "px")]]})]
+                      {:uf/db (assoc state :x new-x)
+                       :uf/fxs (position-fxs container new-x y)})]
     (if (and state-end (> now state-end))
       (update move-result :uf/dxs (fnil conj []) [:buddy/ax.enter-state :idle])
       move-result)))
@@ -216,14 +235,19 @@
         now (:system/now uf-data)]
     (case op
       :buddy/ax.init
-      (let [[dom-refs] args]
+      (let [[dom-refs] args
+            init-x 100
+            init-y (floor-y)]
         {:uf/db (merge dom-refs
                        {:facing :right
                         :buddy-state nil
                         :frame 0
                         :frame-count 0
-                        :current-anim nil})
-         :uf/fxs [[:dom/fx.inject-css (make-sprite-css)]]
+                        :current-anim nil
+                        :x init-x
+                        :y init-y})
+         :uf/fxs [[:dom/fx.inject-css (make-sprite-css)]
+                  [:dom/fx.set-transform (:container dom-refs) init-x init-y]]
          :uf/dxs [[:buddy/ax.enter-state :idle]]})
 
       :buddy/ax.enter-state
@@ -253,17 +277,17 @@
                 offset (* next-frame w s)]
             {:uf/db (assoc state :frame next-frame)
              :uf/fxs [[:dom/fx.set-style el "backgroundPosition"
-                        (str "-" offset "px 0")]]})))
+                       (str "-" offset "px 0")]]})))
 
       :buddy/ax.tick
-      (let [{:keys [buddy-state state-end state-timer el]} state]
+      (let [{:keys [buddy-state state-end state-timer]} state]
         (case buddy-state
           :idle
           (when (and state-end (> now state-end))
             {:uf/dxs [[:buddy/ax.enter-state (pick-next-behavior (:roll uf-data))]]})
 
           :walking
-          (tick-walking state now el)
+          (tick-walking state now)
 
           :sitting
           (let [sit-frames (get-in sprites/animations [:sit :frames])
@@ -285,17 +309,10 @@
 
           nil))
 
-      :buddy/ax.store-timers
-      (let [[frame-timer state-timer] args]
-        {:uf/db (assoc state
-                       :animation-timer frame-timer
-                       :state-update-timer state-timer)})
-
       :buddy/ax.stop
-      (let [{:keys [animation-timer state-update-timer container]} state]
+      (let [{:keys [raf-id container]} state]
         {:uf/db nil
-         :uf/fxs [[:timer/fx.clear-interval animation-timer]
-                  [:timer/fx.clear-interval state-update-timer]
+         :uf/fxs [[:dom/fx.cancel-raf raf-id]
                   [:dom/fx.remove-element container]
                   [:log/fx.log "Page buddy stopped."]]})
 
@@ -335,26 +352,44 @@
 
 ;; -- Lifecycle (entry points dispatch actions only) --
 
+(defn make-raf-loop
+  "Creates a requestAnimationFrame callback that drives sprite and state ticks."
+  []
+  (let [frame-interval (/ 1000 (:fps config))
+        tick-interval 100
+        !timing (atom {:last-ts nil :frame-accum 0 :tick-accum 0})]
+    (fn raf-cb [timestamp]
+      (let [{:keys [last-ts frame-accum tick-accum]} @!timing
+            dt (if last-ts (min (- timestamp last-ts) 200) 0)
+            fa (+ frame-accum dt)
+            ta (+ tick-accum dt)
+            actions (cond-> []
+                      (>= fa frame-interval) (conj [:buddy/ax.advance-frame])
+                      (>= ta tick-interval) (conj [:buddy/ax.tick]))]
+        (reset! !timing {:last-ts timestamp
+                         :frame-accum (if (>= fa frame-interval) (rem fa frame-interval) fa)
+                         :tick-accum (if (>= ta tick-interval) (rem ta tick-interval) ta)})
+        (when (seq actions)
+          (dispatch! actions))
+        (when @!state
+          (swap! !state assoc :raf-id (js/requestAnimationFrame raf-cb)))))))
+
 (defn stop! []
   (dispatch! [[:buddy/ax.stop]]))
 
 (defn start! []
-  (when (:animation-timer @!state) (stop!))
+  (when (:raf-id @!state) (stop!))
   (let [container (js/document.createElement "div")
         el (js/document.createElement "div")]
     (set! (.-id container) "page-buddy-container")
     (set! (.-id el) "page-buddy")
     (.appendChild container el)
     (js/document.body.appendChild container)
-    (let [frame-timer (js/setInterval
-                       (fn [] (dispatch! [[:buddy/ax.advance-frame]]))
-                       (/ 1000 (:fps config)))
-          state-timer (js/setInterval
-                       (fn [] (dispatch! [[:buddy/ax.tick]]))
-                       100)]
-      (dispatch! [[:buddy/ax.init {:el el :container container}]
-                  [:buddy/ax.store-timers frame-timer state-timer]])
-      (js/console.log "Page buddy started! 🐱"))))
+    (dispatch! [[:buddy/ax.init {:el el :container container}]])
+    (let [raf-cb (make-raf-loop)
+          raf-id (js/requestAnimationFrame raf-cb)]
+      (swap! !state assoc :raf-id raf-id))
+    (js/console.log "Page buddy started! 🐱")))
 
 (comment
   (start!)
