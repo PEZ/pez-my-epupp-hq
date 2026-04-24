@@ -23,22 +23,22 @@
 ;; -- Helpers --
 
 (def energy-rates
-  {:walking  -0.002
-   :running  -0.004
-   :jumping  -0.003
-   :falling  -0.001
-   :sitting   0.003
-   :sleeping  0.005
-   :idle      0.001
-   :meowing   0.0
-   :touching  0.0
-   :being-hit -0.005
-   :stunned   0.0
-   :landing   0.0
-   :perching -0.002
-   :edge-contemplating 0.001
-   :dragging 0.0
-   :cursor-chasing -0.002})
+  {:bs/walking  -0.002
+   :bs/running  -0.004
+   :bs/jumping  -0.003
+   :bs/falling  -0.001
+   :bs/sitting   0.003
+   :bs/sleeping  0.005
+   :bs/idle      0.001
+   :bs/meowing   0.0
+   :bs/touching  0.0
+   :bs/being-hit -0.005
+   :bs/stunned   0.0
+   :bs/landing   0.0
+   :bs/perching -0.002
+   :bs/edge-contemplating 0.001
+   :bs/dragging 0.0
+   :bs/cursor-chasing -0.002})
 
 (defonce !state (atom nil))
 
@@ -239,7 +239,7 @@
           (.addEventListener node "click"
                              (fn [e]
                                (.stopPropagation e)
-                               (dispatch-fn [[:buddy/ax.enter-state :being-hit]]))))
+                               (dispatch-fn [[:buddy/ax.enter-state :bs/being-hit]]))))
         nil)
 
       :dom/fx.add-drag-handler
@@ -257,7 +257,7 @@
                 (reset! !drag-state {:last-x x :last-y y :last-t now :vx 0 :vy 0})
                 (dispatch-fn [[:buddy/ax.env-merge
                                :drag {:active? true :x x :y y :vx 0 :vy 0}]
-                              [:buddy/ax.enter-state :dragging]])
+                              [:buddy/ax.enter-state :bs/dragging]])
                 (reset! move-handler
                         (fn [me]
                           (let [mx (.-clientX me)
@@ -331,7 +331,7 @@
                         (reset! !prev-y curr-y)
                         (dispatch-fn
                          (cond-> [[:buddy/ax.env-merge :scroll-y curr-y]]
-                           (> dy 500) (conj [:buddy/ax.enter-state :being-hit])))
+                           (> dy 500) (conj [:buddy/ax.enter-state :bs/being-hit])))
                         (when-let [t @!scan-timeout]
                           (js/clearTimeout t))
                         (reset! !scan-timeout
@@ -418,23 +418,23 @@
   [energy roll]
   (let [rest-bias (- 1.0 energy)
         active-bias energy
-        weights {:sitting  (* 0.25 rest-bias)
-                 :sleeping (if (< energy 0.2) (* 0.3 rest-bias) 0.0)
-                 :meowing  0.12
-                 :touching 0.08
-                 :jumping  (* 0.10 active-bias)
-                 :running  (* 0.20 active-bias)
-                 :perching (* 0.15 active-bias)
-                 :walking  (* 0.30 active-bias)}
+        weights {:bs/sitting  (* 0.25 rest-bias)
+                 :bs/sleeping (if (< energy 0.2) (* 0.3 rest-bias) 0.0)
+                 :bs/meowing  0.12
+                 :bs/touching 0.08
+                 :bs/jumping  (* 0.10 active-bias)
+                 :bs/running  (* 0.20 active-bias)
+                 :bs/perching (* 0.15 active-bias)
+                 :bs/walking  (* 0.30 active-bias)}
         total (reduce + (vals weights))
         normalized (reduce-kv (fn [m k v] (assoc m k (/ v total))) {} weights)
-        ordered [:sitting :sleeping :meowing :touching :jumping :running :perching :walking]
+        ordered [:bs/sitting :bs/sleeping :bs/meowing :bs/touching :bs/jumping :bs/running :bs/perching :bs/walking]
         cumulative (reductions + (map #(get normalized %) ordered))]
     (or (first (keep-indexed
                 (fn [i cum]
                   (when (< roll cum) (nth ordered i)))
                 cumulative))
-        :walking)))
+        :bs/walking)))
 
 ;; -- Actions (pure: state + uf-data + action → result) --
 
@@ -456,13 +456,13 @@
         now (:system/now uf-data)
         base-db (assoc state :buddy-state new-bstate :state-timer now)]
     (case new-bstate
-      :idle
+      :bs/idle
       (let [[lo hi] (:idle-duration config)
             duration (rand-between lo hi)]
         {:uf/db (assoc base-db :state-end (+ now duration))
          :uf/fxs (anim-fxs el :idle)})
 
-      :walking
+      :bs/walking
       (let [energy (or (:energy state) 0.8)
             scale (+ 0.3 (* 0.7 energy))
             [lo hi] (:walk-duration config)
@@ -474,7 +474,7 @@
          :uf/fxs (into (anim-fxs el :walk)
                        (facing-fxs el new-facing))})
 
-      :running
+      :bs/running
       (let [energy (or (:energy state) 0.8)
             scale (+ 0.3 (* 0.7 energy))
             [lo hi] (:walk-duration config)
@@ -486,7 +486,7 @@
          :uf/fxs (into (anim-fxs el :run)
                        (facing-fxs el new-facing))})
 
-      :jumping
+      :bs/jumping
       (let [vx (if (= (:facing state) :right)
                  (* 0.5 (:walk-speed config))
                  (* -0.5 (:walk-speed config)))
@@ -494,52 +494,52 @@
         {:uf/db (assoc base-db :vx vx :vy vy)
          :uf/fxs (anim-fxs el :jump)})
 
-      :falling
+      :bs/falling
       {:uf/db (assoc base-db :vx 0 :vy 0)
        :uf/fxs (anim-fxs el :jump)}
 
-      :landing
+      :bs/landing
       {:uf/db (assoc base-db :state-end (+ now 500))
        :uf/fxs (anim-fxs el :stunned)}
 
-      :being-hit
+      :bs/being-hit
       {:uf/db (assoc base-db :state-end (+ now 400))
        :uf/fxs (anim-fxs el :being-hit)}
 
-      :stunned
+      :bs/stunned
       {:uf/db (assoc base-db :state-end (+ now 800))
        :uf/fxs (anim-fxs el :stunned)}
 
-      :sitting
+      :bs/sitting
       {:uf/db base-db
        :uf/fxs (anim-fxs el :sit)}
 
-      :sleeping
+      :bs/sleeping
       {:uf/db (assoc base-db :state-end (+ now (:sleep-delay config)))
        :uf/fxs (anim-fxs el :sleep)}
 
-      :meowing
+      :bs/meowing
       {:uf/db (assoc base-db :state-end (+ now 800))
        :uf/fxs (anim-fxs el :meow)}
 
-      :touching
+      :bs/touching
       {:uf/db (assoc base-db :state-end (+ now 800))
        :uf/fxs (anim-fxs el :touch)}
 
-      :perching
+      :bs/perching
       {:uf/db base-db
        :uf/fxs (anim-fxs el :walk)}
 
-      :edge-contemplating
+      :bs/edge-contemplating
       (let [duration (rand-between 800 1500)]
         {:uf/db (assoc base-db :state-end (+ now duration))
          :uf/fxs (anim-fxs el :idle)})
 
-      :dragging
+      :bs/dragging
       {:uf/db (assoc base-db :current-surface nil)
        :uf/fxs (anim-fxs el :being-hit)}
 
-      :cursor-chasing
+      :bs/cursor-chasing
       {:uf/db base-db
        :uf/fxs (anim-fxs el :walk)}
 
@@ -558,7 +558,7 @@
           (let [rect (.getBoundingClientRect (:el current-surface))]
             [(.-left rect) (- (.-right rect) cat-w)])
           [0 (- js/window.innerWidth cat-w)])
-        edge-state (if current-surface :edge-contemplating :idle)
+        edge-state (if current-surface :bs/edge-contemplating :bs/idle)
         move-result (cond
                       (< new-x min-bound)
                       {:uf/db (assoc state :x min-bound :facing :right)
@@ -576,7 +576,7 @@
                       {:uf/db (assoc state :x new-x)
                        :uf/fxs (position-fxs container new-x y)})]
     (if (and state-end (> now state-end))
-      (update move-result :uf/dxs (fnil conj []) [:buddy/ax.enter-state :idle])
+      (update move-result :uf/dxs (fnil conj []) [:buddy/ax.enter-state :bs/idle])
       move-result)))
 
 
@@ -598,7 +598,7 @@
     (cond
       landing-surface
       (let [surface-y (- (:top landing-surface) (* (:h sprites/frame-size) (:scale config)))
-            land-state (if (> new-vy 6) :stunned :idle)]
+            land-state (if (> new-vy 6) :bs/stunned :bs/idle)]
         {:uf/db (assoc state
                        :x clamped-x :y surface-y
                        :vx 0 :vy 0
@@ -607,7 +607,7 @@
          :uf/dxs [[:buddy/ax.enter-state land-state]]})
 
       (>= new-y fy)
-      (let [land-state (if (> new-vy 6) :stunned :idle)]
+      (let [land-state (if (> new-vy 6) :bs/stunned :bs/idle)]
         {:uf/db (assoc state
                        :x clamped-x :y fy
                        :vx 0 :vy 0
@@ -648,7 +648,7 @@
               dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))]
           (if (and (< dist 500) (> dist 180) (< (rand) 0.005))
             {:uf/db state
-             :uf/dxs [[:buddy/ax.enter-state :cursor-chasing]]}
+             :uf/dxs [[:buddy/ax.enter-state :bs/cursor-chasing]]}
             (or (mouse-facing-fxs state uf-data)
                 {:uf/db state})))
         (or (mouse-facing-fxs state uf-data)
@@ -671,9 +671,9 @@
           (let [jump-params (compute-jump-to-surface x y target)]
             (if jump-params
               {:uf/db (assoc state :vx (:vx jump-params) :vy (:vy jump-params)
-                             :buddy-state :jumping)
+                             :buddy-state :bs/jumping)
                :uf/fxs (anim-fxs el :jump)}
-              {:uf/dxs [[:buddy/ax.enter-state :idle]]}))
+              {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]}))
           (let [speed (:walk-speed config)
                 step (if (= walk-facing :right) speed (- speed))
                 new-x (+ x step)
@@ -684,7 +684,7 @@
             {:uf/db (assoc state :x clamped-x :facing walk-facing)
              :uf/fxs (into (position-fxs container clamped-x y)
                            (or facing-update []))})))
-      {:uf/dxs [[:buddy/ax.enter-state :idle]]})))
+      {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})))
 
 (defn tick-edge-contemplating
   "Tick handler for edge contemplation — decide to jump off or turn around."
@@ -696,11 +696,11 @@
         (if jump-off?
           (let [vx (if (= facing :left) -2 2)]
             {:uf/db (assoc state :vx vx :vy -2 :current-surface nil)
-             :uf/dxs [[:buddy/ax.enter-state :jumping]]})
+             :uf/dxs [[:buddy/ax.enter-state :bs/jumping]]})
           (let [new-facing (if (= facing :left) :right :left)]
             {:uf/db (assoc state :facing new-facing)
              :uf/fxs (facing-fxs el new-facing)
-             :uf/dxs [[:buddy/ax.enter-state :walking]]}))))))
+             :uf/dxs [[:buddy/ax.enter-state :bs/walking]]}))))))
 
 (defn tick-dragging
   "Tick handler for dragging — follow drag position, handle break-free."
@@ -719,7 +719,7 @@
         (if break-free?
           (let [vx (if (= new-facing :left) 4 -4)]
             {:uf/db (assoc state :vx vx :vy -6 :x new-x :y new-y :current-surface nil)
-             :uf/dxs [[:buddy/ax.enter-state :jumping]]})
+             :uf/dxs [[:buddy/ax.enter-state :bs/jumping]]})
           {:uf/db (assoc state :x new-x :y new-y :facing new-facing)
            :uf/fxs (into (position-fxs container new-x new-y)
                          (when (not= new-facing (:facing state))
@@ -734,7 +734,7 @@
         cat-w (* (:w sprites/frame-size) (:scale config))
         cat-center-x (+ x (/ cat-w 2))]
     (if (nil? mouse-x)
-      {:uf/dxs [[:buddy/ax.enter-state :idle]]}
+      {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
       (let [dx (- mouse-x cat-center-x)
             dy (- mouse-y y)
             dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))
@@ -746,11 +746,11 @@
         (cond
           mouse-moved?
           {:uf/db (assoc state :last-mouse-x mouse-x :last-mouse-y mouse-y)
-           :uf/dxs [[:buddy/ax.enter-state :idle]]}
+           :uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
 
           (<= dist 180)
           {:uf/db (assoc state :last-mouse-x mouse-x :last-mouse-y mouse-y)
-           :uf/dxs [[:buddy/ax.enter-state :idle]]}
+           :uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
 
           :else
           (let [walk-facing (if (pos? dx) :right :left)
@@ -788,7 +788,7 @@
               [:dom/fx.add-click-tracker]
               [:dom/fx.add-scroll-tracker]
               [:dom/fx.scan-surfaces]]
-     :uf/dxs [[:buddy/ax.enter-state :idle]]}))
+     :uf/dxs [[:buddy/ax.enter-state :bs/idle]]}))
 
 (defn react-to-click-action
   "React to a page click — flinch or face toward it."
@@ -798,14 +798,14 @@
         dx (- click-x cat-center-x)
         dy (- click-y (+ y (/ (* (:h sprites/frame-size) (:scale config)) 2)))
         dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))
-        ground-state? (contains? #{:idle :walking :running :sitting :meowing :touching :perching :edge-contemplating} buddy-state)]
+        ground-state? (contains? #{:bs/idle :bs/walking :bs/running :bs/sitting :bs/meowing :bs/touching :bs/perching :bs/edge-contemplating} buddy-state)]
     (when ground-state?
       (cond
         (and (< dist 200) (< (rand) 0.3))
         (let [run-facing (if (pos? dx) :left :right)]
           {:uf/db (assoc state :facing run-facing)
            :uf/fxs (facing-fxs el run-facing)
-           :uf/dxs [[:buddy/ax.enter-state :being-hit]]})
+           :uf/dxs [[:buddy/ax.enter-state :bs/being-hit]]})
 
         (< dist 500)
         (let [face-dir (if (pos? dx) :right :left)]
@@ -846,22 +846,22 @@
       (let [[new-bstate] args
             result (enter-state-action state uf-data new-bstate)
             anim-key (case new-bstate
-                       :idle :idle
-                       :walking :walk
-                       :running :run
-                       :jumping :jump
-                       :falling :jump
-                       :landing :stunned
-                       :being-hit :being-hit
-                       :stunned :stunned
-                       :sitting :sit
-                       :sleeping :sleep
-                       :meowing :meow
-                       :touching :touch
-                       :perching :walk
-                       :edge-contemplating :idle
-                       :dragging :being-hit
-                       :cursor-chasing :walk
+                       :bs/idle :idle
+                       :bs/walking :walk
+                       :bs/running :run
+                       :bs/jumping :jump
+                       :bs/falling :jump
+                       :bs/landing :stunned
+                       :bs/being-hit :being-hit
+                       :bs/stunned :stunned
+                       :bs/sitting :sit
+                       :bs/sleeping :sleep
+                       :bs/meowing :meow
+                       :bs/touching :touch
+                       :bs/perching :walk
+                       :bs/edge-contemplating :idle
+                       :bs/dragging :being-hit
+                       :bs/cursor-chasing :walk
                        nil)]
         (when result
           (let [frames (get-in sprites/animations [anim-key :frames] 0)]
@@ -889,47 +889,47 @@
             behavior-result
             (if surface-lost?
               {:uf/db (assoc state :current-surface nil)
-               :uf/dxs [[:buddy/ax.enter-state :falling]]}
+               :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}
               (case buddy-state
-                :idle (tick-idle state uf-data)
-                :walking (tick-walking state now)
-                :running (tick-walking state now)
-                (:jumping :falling) (tick-jumping state uf-data)
+                :bs/idle (tick-idle state uf-data)
+                :bs/walking (tick-walking state now)
+                :bs/running (tick-walking state now)
+                (:bs/jumping :bs/falling) (tick-jumping state uf-data)
 
-                :landing
+                :bs/landing
                 (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :idle]]})
+                  {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})
 
-                :being-hit
+                :bs/being-hit
                 (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :stunned]]})
+                  {:uf/dxs [[:buddy/ax.enter-state :bs/stunned]]})
 
-                :stunned
+                :bs/stunned
                 (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :idle]]})
+                  {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})
 
-                :sitting
+                :bs/sitting
                 (let [sit-frames (get-in sprites/animations [:sit :frames])
                       elapsed (- now state-timer)]
                   (when (> elapsed (* sit-frames (/ 1000 (:fps config))))
-                    {:uf/dxs [[:buddy/ax.enter-state :sleeping]]}))
+                    {:uf/dxs [[:buddy/ax.enter-state :bs/sleeping]]}))
 
-                :sleeping
+                :bs/sleeping
                 (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :idle]]})
+                  {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})
 
-                :meowing
+                :bs/meowing
                 (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :idle]]})
+                  {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})
 
-                :touching
+                :bs/touching
                 (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :idle]]})
+                  {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})
 
-                :perching (tick-perching state uf-data)
-                :edge-contemplating (tick-edge-contemplating state uf-data)
-                :dragging (tick-dragging state uf-data)
-                :cursor-chasing (tick-cursor-chasing state uf-data)
+                :bs/perching (tick-perching state uf-data)
+                :bs/edge-contemplating (tick-edge-contemplating state uf-data)
+                :bs/dragging (tick-dragging state uf-data)
+                :bs/cursor-chasing (tick-cursor-chasing state uf-data)
                 nil))]
         (if behavior-result
           (update behavior-result :uf/db #(or % state))
@@ -943,7 +943,7 @@
             clamped-vx (max -15 (min 15 (or vx 0)))
             clamped-vy (max -15 (min 15 (or vy 0)))]
         {:uf/db (assoc state :vx clamped-vx :vy clamped-vy :current-surface nil)
-         :uf/dxs [[:buddy/ax.enter-state :jumping]]})
+         :uf/dxs [[:buddy/ax.enter-state :bs/jumping]]})
 
       :buddy/ax.react-to-click
       (let [[click-x click-y] args]
@@ -1056,13 +1056,13 @@
 (comment
   (start!)
   (stop!)
-  (dispatch! [[:buddy/ax.enter-state :walking]])
-  (dispatch! [[:buddy/ax.enter-state :running]])
-  (dispatch! [[:buddy/ax.enter-state :jumping]])
-  (dispatch! [[:buddy/ax.enter-state :being-hit]])
-  (dispatch! [[:buddy/ax.enter-state :sitting]])
-  (dispatch! [[:buddy/ax.enter-state :meowing]])
-  (dispatch! [[:buddy/ax.enter-state :touching]])
+  (dispatch! [[:buddy/ax.enter-state :bs/walking]])
+  (dispatch! [[:buddy/ax.enter-state :bs/running]])
+  (dispatch! [[:buddy/ax.enter-state :bs/jumping]])
+  (dispatch! [[:buddy/ax.enter-state :bs/being-hit]])
+  (dispatch! [[:buddy/ax.enter-state :bs/sitting]])
+  (dispatch! [[:buddy/ax.enter-state :bs/meowing]])
+  (dispatch! [[:buddy/ax.enter-state :bs/touching]])
   @!state
   @!env
   (select-keys @!env [:mouse-x :mouse-y])
