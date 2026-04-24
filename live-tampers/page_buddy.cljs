@@ -679,6 +679,18 @@
         {:uf/db (assoc base-db :buddy/state-end (+ now duration))
          :uf/fxs (anim-fxs el :anim/idle)})
 
+      :bs/climb-idle
+      (let [surface-type (derive-surface-type state)]
+        {:uf/db (assoc base-db :buddy/climb-goal nil)
+         :uf/fxs (into (anim-fxs el :anim/climb-idle)
+                       (orientation-fxs el (:buddy/facing state) surface-type))})
+
+      :bs/wall-sliding
+      (let [surface-type (derive-surface-type state)]
+        {:uf/db (assoc base-db :buddy/climb-direction :climb/down)
+         :uf/fxs (into (anim-fxs el :anim/climb)
+                       (orientation-fxs el (:buddy/facing state) surface-type))})
+
       :bs/dragging
       {:uf/db (assoc base-db :buddy/current-surface nil :surface/offset-x nil)
        :uf/fxs (anim-fxs el :anim/being-hit)}
@@ -897,6 +909,64 @@
       {:uf/db (assoc state :surface/offset-x new-offset)})))
 
 
+
+(defn tick-climb-idle
+  "Tick handler for climb-idle — cling to wall, decide next action."
+  [state uf-data]
+  (let [now (:system/now uf-data)
+        {:buddy/keys [state-timer]} state
+        elapsed (- now (or state-timer now))
+        surface-type (derive-surface-type state)]
+    (when (> elapsed 1500)
+      (let [roll (:rng/roll uf-data)
+            energy (or (:buddy/energy state) 0.5)]
+        (cond
+          ;; Low energy → slide down
+          (and (< energy 0.3) (< roll 0.4))
+          {:uf/dxs [[:buddy/ax.enter-state :bs/wall-sliding]]}
+
+          ;; Resume climbing up
+          (< roll 0.3)
+          {:uf/db (assoc state :buddy/climb-direction :climb/up)
+           :uf/dxs [[:buddy/ax.enter-state :bs/climbing]]}
+
+          ;; Climb down
+          (< roll 0.5)
+          {:uf/db (assoc state :buddy/climb-direction :climb/down)
+           :uf/dxs [[:buddy/ax.enter-state :bs/climbing]]}
+
+          ;; Jump off wall
+          (< roll 0.7)
+          (let [kick-vx (if (= surface-type :surface/left-wall) 3 -3)]
+            {:uf/db (assoc state
+                           :vel/x kick-vx :vel/y -4
+                           :buddy/current-surface nil
+                           :surface/offset-x nil
+                           :buddy/climb-direction nil)
+             :uf/dxs [[:buddy/ax.enter-state :bs/jumping]]})
+
+          ;; Stay clinging (reset timer for another cycle)
+          :else
+          {:uf/db (assoc state :buddy/state-timer now)})))))
+
+(defn tick-wall-sliding
+  "Tick handler for wall-sliding — slow passive descent, detach at bottom."
+  [state _uf-data]
+  (let [{:buddy/keys [current-surface]
+         :surface/keys [offset-x]} state
+        slide-speed (:cfg/wall-slide-speed config)
+        surf-el (:dom/el current-surface)
+        rect (.getBoundingClientRect surf-el)
+        el-height (.-height rect)
+        max-offset (- el-height cat-w)
+        new-offset (+ (or offset-x 0) slide-speed)]
+    (if (> new-offset max-offset)
+      {:uf/db (assoc state
+                     :surface/offset-x nil
+                     :buddy/current-surface nil
+                     :buddy/climb-direction nil)
+       :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}
+      {:uf/db (assoc state :surface/offset-x new-offset)})))
 
 (defn tick-edge-contemplating
   "Tick handler for edge contemplation — decide to jump off or turn around."
@@ -1173,6 +1243,8 @@
                   :bs/walking (tick-walking state now)
                   :bs/running (tick-walking state now)
                   :bs/climbing (tick-climbing state uf-data)
+                  :bs/climb-idle (tick-climb-idle state uf-data)
+                  :bs/wall-sliding (tick-wall-sliding state uf-data)
                   (:bs/jumping :bs/falling) (tick-jumping state uf-data)
                   :bs/sitting
                   (let [sit-frames (get-in page-buddy-sprites/animations [:anim/sit :anim/frames])
