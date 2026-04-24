@@ -182,22 +182,11 @@
         [(+ (.-left rect) offset-x)
          (- (.-top rect) cat-h)]))))
 
-(defn offset-from-viewport
-  "Convert viewport x to surface-relative offset."
-  [viewport-x el]
-  (let [rect (.getBoundingClientRect el)]
-    (- viewport-x (.-left rect))))
-
 (defn surface-walk-bounds
   "Offset bounds [min max] for walking on a surface element."
   [el]
   (let [rect (.getBoundingClientRect el)]
     [0 (- (.-width rect) cat-w)]))
-
-(defn on-surface?
-  "True when cat is in surface-relative positioning mode."
-  [state]
-  (some? (:surface/offset-x state)))
 
 (defn perform-effect!
   "Execute a side effect. Returns {:uf/env {...}} for env updates, or nil."
@@ -390,7 +379,6 @@
 
       (do (js/console.warn "Unhandled effect:" (pr-str effect)) nil))))
 
-
 ;; -- Pure helpers for actions --
 
 (defn make-sprite-css []
@@ -416,7 +404,6 @@
      "#page-buddy.facing-left {"
      "  transform: scaleX(-1);"
      "}")))
-
 
 (defn anim-fxs
   "Effect vectors to apply a sprite animation to an element."
@@ -623,7 +610,6 @@
       (update move-result :uf/dxs (fnil conj []) [:buddy/ax.enter-state :bs/idle])
       move-result)))
 
-
 (defn tick-jumping
   "Pure jumping/falling tick with gravity and surface detection."
   [state uf-data]
@@ -667,7 +653,6 @@
            :uf/dxs [[:buddy/ax.enter-state land-state]]})
         {:uf/db (assoc state :pos/x clamped-x :pos/y new-y :vel/x vx :vel/y new-vy)
          :uf/fxs (position-fxs container clamped-x new-y)}))))
-
 
 (defn tick-idle
   "Tick handler for idle state — check timeout, cursor chase opportunity, mouse facing."
@@ -815,7 +800,6 @@
              :uf/fxs (into (position-fxs container clamped-x y)
                            (when facing-changed?
                              (facing-fxs el walk-facing)))}))))))
-
 
 (defn init-action
   "Initialize buddy from DOM refs."
@@ -1032,8 +1016,6 @@
       (do (js/console.warn "Unhandled action:" (pr-str action))
           nil))))
 
-
-
 ;; -- Dispatch Loop (single state access point) --
 
 (defn make-dispatch
@@ -1074,7 +1056,6 @@
                   (swap! !env merge env-upd))))
             (when (seq all-dxs)
               (dispatch! all-dxs))))))))
-
 
 (def dispatch!
   "Global dispatch function for REPL convenience. Created from make-dispatch."
