@@ -602,24 +602,47 @@ The same `querySelectorAll` + `getBoundingClientRect` scan, with additional geom
 
 ## Implementation Phases
 
-### Phase 5a: Wall Fundamentals
+### Phase 5a: Wall Fundamentals ✅
 **Theme**: Cat uses vertical surfaces.
 
 Infrastructure:
-- Surface-valid transition gate (prevent wall cat from entering floor-only state)
-- Behavior successor constraints (`valid-next-behaviors` function)
-- Wall-surface-detection in `scan-surfaces-data`
-- Computed transform string (retire `.facing-left` class toggle)
-- Rotation pivot offset compensation (24px)
-- `:bs/climbing`, `:bs/climb-idle`, `:bs/wall-sliding` states
-- `tick-climbing`, `tick-climb-idle`, `tick-wall-sliding` handlers
-- `energy-rates` entries for new states
-- `collision-rect` helper for rotated bounds
-- Height-goal parameter in `tick-climbing` (for Curious Climber)
+- ✅ Surface-valid transition gate (prevent wall cat from entering floor-only state)
+- ✅ Behavior successor constraints (`pick-next-behavior` with `valid-set` filter)
+- ✅ Wall-surface-detection in `scan-surfaces-data` (`:surface/faces` annotation)
+- ✅ Computed transform string (retire `.facing-left` class toggle → `orientation-fxs`)
+- ⏳ Rotation pivot offset compensation (24px) — deferred to REPL tuning
+- ✅ `:bs/climbing`, `:bs/climb-idle`, `:bs/wall-sliding` states
+- ✅ `tick-climbing`, `tick-climb-idle`, `tick-wall-sliding` handlers
+- ✅ `energy-rates` entries for new states
+- ⏳ `collision-rect` helper for rotated bounds — deferred to Phase 5b (side collision)
+- ✅ Height-goal parameter in `tick-climbing` (for Curious Climber)
+- ✅ `find-wall-surface` helper for locating nearby climbable walls
+- ✅ `attempt-wall-climb` entry point from idle/walking
+- ✅ `derive-surface-type` helper
+- ✅ `on-surface?` helper
+- ✅ Config keys: `:cfg/climb-speed-ratio`, `:cfg/ceiling-speed-ratio`, `:cfg/wall-slide-speed`
+- ✅ Init state: `:buddy/climb-direction nil`
+- ✅ Detach sites clear `:buddy/climb-direction` and `:buddy/climb-goal`
 
-Scenes: Proud Climber, Lazy Wall Slide, Startle and Flee Up, Wall Backflip, Cat Confused at Wall, Curious Climber, Edge-to-Climb-Down
+Entry points:
+- ✅ Edge-contemplating → 15% climb-down variant
+- ✅ `pick-next-behavior` → `:bs/climbing` in weight pool
+- ✅ `tick-idle` → `attempt-wall-climb` when wall nearby
+- ⏳ Startle and Flee Up (being-hit → flee to wall) — follow-up
+- ⏳ Wall Backflip (running → wall-run → backflip) — follow-up
 
-**Shippable result**: Cat climbs walls, clings, slides down, does backflips, explores walls curiously, climbs down from edges.
+Scenes working: Proud Climber (basic), Curious Climber (height-goal), Edge-to-Climb-Down, Lazy Wall Slide
+
+**Shippable result**: Cat climbs walls, clings, slides down, climbs down from edges. Pivot offset and advanced scenes need REPL tuning.
+
+#### Commits
+- `d844fba`: Config, energy rates, wall helpers
+- `ee14dd4`: Computed transform architecture (orientation-fxs)
+- `680283e`: Wall surface detection (:surface/faces)
+- `36dd3da`: Surface-valid transition gate
+- `880f20e`: Climbing state + tick handler
+- `dab8a3f`: Climb-idle + wall-sliding states
+- `e30dd5b`: Wall entry points + scene wiring
 
 ### Phase 5b: Multi-Step Scenes + Side Collision
 **Theme**: Cat has complex behaviors and reacts to throws.
