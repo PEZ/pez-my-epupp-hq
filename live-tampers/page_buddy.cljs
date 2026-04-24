@@ -44,10 +44,6 @@
 
 (defonce !env (atom {:mouse-x nil :mouse-y nil :scroll-y 0}))
 
-;; -- Forward declaration for dispatch (only legitimate use) --
-
-(declare dispatch!)
-
 (defn rand-between [lo hi]
   (+ lo (rand-int (- hi lo))))
 
@@ -194,7 +190,7 @@
 
 (defn perform-effect!
   "Execute a side effect described by an effect vector."
-  [effect]
+  [dispatch-fn !env effect]
   (let [[op & args] effect]
     (case op
       :dom/fx.create-buddy
@@ -252,7 +248,7 @@
           (.addEventListener node "click"
                              (fn [e]
                                (.stopPropagation e)
-                               (dispatch! [[:buddy/ax.enter-state :being-hit]]))))
+                               (dispatch-fn [[:buddy/ax.enter-state :being-hit]]))))
         nil)
 
       :dom/fx.add-drag-handler
@@ -269,7 +265,7 @@
                     now (js/Date.now)]
                 (reset! !drag-state {:last-x x :last-y y :last-t now})
                 (swap! !env assoc :drag {:active? true :x x :y y :vx 0 :vy 0})
-                (dispatch! [[:buddy/ax.enter-state :dragging]])
+                (dispatch-fn [[:buddy/ax.enter-state :dragging]])
                 (reset! move-handler
                         (fn [me]
                           (let [mx (.-clientX me)
@@ -288,7 +284,7 @@
                             (swap! !env assoc :drag {:active? false :x nil :y nil :vx 0 :vy 0})
                             (.removeEventListener js/document "mousemove" @move-handler)
                             (.removeEventListener js/document "mouseup" @up-handler)
-                            (dispatch! [[:buddy/ax.drag-release vx vy]]))))
+                            (dispatch-fn [[:buddy/ax.drag-release vx vy]]))))
                 (.addEventListener js/document "mousemove" @move-handler)
                 (.addEventListener js/document "mouseup" @up-handler)))]
         (when container-node
@@ -321,7 +317,7 @@
 
       :dom/fx.add-click-tracker
       (let [handler (fn [e]
-                      (dispatch! [[:buddy/ax.react-to-click (.-clientX e) (.-clientY e)]]))]
+                      (dispatch-fn [[:buddy/ax.react-to-click (.-clientX e) (.-clientY e)]]))]
         (.addEventListener js/document "click" handler)
         (swap! !env assoc :click-handler handler)
         nil)
@@ -340,12 +336,12 @@
                             dy (js/Math.abs (- curr-y prev-y))]
                         (swap! !env assoc :scroll-y curr-y)
                         (when (> dy 500)
-                          (dispatch! [[:buddy/ax.enter-state :being-hit]]))
+                          (dispatch-fn [[:buddy/ax.enter-state :being-hit]]))
                         (when-let [t @!scan-timeout]
                           (js/clearTimeout t))
                         (reset! !scan-timeout
                                 (js/setTimeout
-                                 #(dispatch! [[:buddy/ax.scan-surfaces]])
+                                 #(dispatch-fn [[:buddy/ax.scan-surfaces]])
                                  500))))]
         (.addEventListener js/window "scroll" handler #js {:passive true})
         (swap! !env assoc :scroll-handler handler)
@@ -359,7 +355,7 @@
 
       :timer/fx.set-interval
       (let [[callback-action ms] args]
-        (js/setInterval (fn [] (dispatch! [callback-action])) ms))
+        (js/setInterval (fn [] (dispatch-fn [callback-action])) ms))
 
       :timer/fx.clear-interval
       (let [[timer-id] args]
@@ -950,50 +946,56 @@
 
 ;; -- Dispatch Loop (single state access point) --
 
-(defn dispatch!
-  "The single access point for state. Only place that reads/writes !state."
-  [actions]
-  (let [env @!env]
-    (loop [remaining (seq actions)
-           state @!state
-           all-fxs []
-           all-dxs []]
-      (if remaining
-        (let [action (first remaining)
-              result (handle-action state {:system/now (js/Date.now)
-                                           :roll (rand)
-                                           :mouse/x (:mouse-x env)
-                                           :mouse/y (:mouse-y env)
-                                           :scroll/y (:scroll-y env)
-                                           :surfaces/visible (:surfaces env)
-                                           :drag/data (:drag env)
-                                           :env/drag-handler (:drag-handler env)
-                                           :env/mouse-handler (:mouse-handler env)
-                                           :env/click-handler (:click-handler env)
-                                           :env/scroll-handler (:scroll-handler env)}
-                                    action)
-              new-state (if (and (map? result) (contains? result :uf/db))
-                          (:uf/db result)
-                          state)
-              fxs (when (map? result) (:uf/fxs result))
-              dxs (when (map? result) (:uf/dxs result))]
-          (recur (next remaining)
-                 new-state
-                 (into all-fxs fxs)
-                 (into all-dxs dxs)))
-        (do
-          (reset! !state state)
-          (doseq [fx all-fxs]
-            (when fx
-              (perform-effect! fx)))
-          (when (seq all-dxs)
-            (dispatch! all-dxs)))))))
+(defn make-dispatch
+  "Creates a dispatch function closed over the given state and env atoms.
+   The returned function is the single access point for state."
+  [!state !env]
+  (fn dispatch! [actions]
+    (let [env @!env]
+      (loop [remaining (seq actions)
+             state @!state
+             all-fxs []
+             all-dxs []]
+        (if remaining
+          (let [action (first remaining)
+                result (handle-action state {:system/now (js/Date.now)
+                                             :roll (rand)
+                                             :mouse/x (:mouse-x env)
+                                             :mouse/y (:mouse-y env)
+                                             :scroll/y (:scroll-y env)
+                                             :surfaces/visible (:surfaces env)
+                                             :drag/data (:drag env)
+                                             :env/drag-handler (:drag-handler env)
+                                             :env/mouse-handler (:mouse-handler env)
+                                             :env/click-handler (:click-handler env)
+                                             :env/scroll-handler (:scroll-handler env)}
+                                      action)
+                new-state (if (and (map? result) (contains? result :uf/db))
+                            (:uf/db result)
+                            state)
+                fxs (when (map? result) (:uf/fxs result))
+                dxs (when (map? result) (:uf/dxs result))]
+            (recur (next remaining)
+                   new-state
+                   (into all-fxs fxs)
+                   (into all-dxs dxs)))
+          (do
+            (reset! !state state)
+            (doseq [fx all-fxs]
+              (when fx
+                (perform-effect! dispatch! !env fx)))
+            (when (seq all-dxs)
+              (dispatch! all-dxs))))))))
+
+(def dispatch!
+  "Global dispatch function for REPL convenience. Created from make-dispatch."
+  (make-dispatch !state !env))
 
 ;; -- Lifecycle (entry points dispatch actions only) --
 
 (defn make-raf-loop
   "Creates a requestAnimationFrame callback that drives sprite and state ticks."
-  []
+  [dispatch-fn !state]
   (let [frame-interval (/ 1000 (:fps config))
         tick-interval 100
         !timing (atom {:last-ts nil :frame-accum 0 :tick-accum 0})]
@@ -1009,9 +1011,9 @@
                          :frame-accum (if (>= fa frame-interval) (rem fa frame-interval) fa)
                          :tick-accum (if (>= ta tick-interval) (rem ta tick-interval) ta)})
         (when (seq actions)
-          (dispatch! actions))
+          (dispatch-fn actions))
         (when @!state
-          (dispatch! [[:buddy/ax.assoc :raf-id (js/requestAnimationFrame raf-cb)]]))))))
+          (dispatch-fn [[:buddy/ax.assoc :raf-id (js/requestAnimationFrame raf-cb)]]))))))
 
 (defn stop! []
   (dispatch! [[:buddy/ax.stop]]))
@@ -1025,7 +1027,7 @@
     (.appendChild container el)
     (js/document.body.appendChild container)
     (dispatch! [[:buddy/ax.init {:el el :container container}]])
-    (let [raf-cb (make-raf-loop)
+    (let [raf-cb (make-raf-loop dispatch! !state)
           raf-id (js/requestAnimationFrame raf-cb)]
       (dispatch! [[:buddy/ax.assoc :raf-id raf-id]]))
     (js/console.log "Page buddy started! 🐱")))
