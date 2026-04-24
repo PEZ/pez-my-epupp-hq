@@ -20,6 +20,7 @@ Architecture skill for the page buddy live-tamper — an animated cat that walks
 - Load the **uniflow** skill — page buddy implements a Uniflow variant
 - Load the **epupp** skill — page buddy runs as a Scittle live-tamper
 - Load the **backseat-driver** skill — for REPL-driven development
+- Read `page_buddy.cljs` in its entirety, without chunking. Understand the dispatch loop, FSM, and physics model before making changes.
 
 ## Architecture: Uniflow Without Replicant
 
@@ -31,8 +32,6 @@ Page buddy adapts Uniflow for direct DOM manipulation in SCI. No Replicant views
 |------|-------|---------|--------|
 | `!state` | `defonce` | Application state: buddy-state, position, animation, el/container refs, raf-id | Only `dispatch!` |
 | `!env` | `defonce` | Environment: mouse-x, mouse-y, scroll-y, drag data, surfaces, handler refs | Only `dispatch!` |
-
-A third atom, `!timing`, is local to `make-raf-loop` (frame/tick delta accumulators) — invisible to the rest of the system.
 
 `!state` is application truth. `!env` is an input sensor — analogous to enrichment data, not managed state. Both are written exclusively by the dispatch loop.
 
