@@ -19,7 +19,10 @@
    :cfg/jump-chance 0.08
    :cfg/gravity 0.5
    :cfg/terminal-vel 12
-   :cfg/jump-vy -8})
+   :cfg/jump-vy -8
+   :cfg/climb-speed-ratio 0.75
+   :cfg/ceiling-speed-ratio 0.5
+   :cfg/wall-slide-speed 0.5})
 
 (def cat-w (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config)))
 (def cat-h (* (:sprite/h page-buddy-sprites/frame-size) (:cfg/scale config)))
@@ -42,7 +45,13 @@
    :bs/perching -0.002
    :bs/edge-contemplating 0.001
    :bs/dragging 0.0
-   :bs/cursor-chasing -0.002})
+   :bs/cursor-chasing -0.002
+   :bs/climbing -0.003
+   :bs/climb-idle 0.001
+   :bs/wall-sliding -0.001
+   :bs/corner-transition -0.002
+   :bs/ceiling-walking -0.003
+   :bs/ceiling-idle 0.001})
 
 (defonce !state (atom nil))
 
@@ -213,6 +222,28 @@
   [el]
   (let [rect (.getBoundingClientRect el)]
     [0 (- (.-width rect) cat-w)]))
+
+(defn on-surface?
+  "True when cat is in surface-relative positioning mode."
+  [state]
+  (some? (:surface/offset-x state)))
+
+(defn derive-surface-type
+  "Derive surface type from current surface + cat position. Returns :surface/floor, :surface/left-wall, :surface/right-wall, or nil."
+  [state]
+  (when-let [surface (:buddy/current-surface state)]
+    (when-let [el (:dom/el surface)]
+      (when (.-isConnected el)
+        (let [rect (.getBoundingClientRect el)
+              climb-dir (:buddy/climb-direction state)]
+          (cond
+            (= climb-dir :climb/up)   (if (<= (:pos/x state) (.-left rect))
+                                        :surface/left-wall
+                                        :surface/right-wall)
+            (= climb-dir :climb/down) (if (<= (:pos/x state) (.-left rect))
+                                        :surface/left-wall
+                                        :surface/right-wall)
+            :else :surface/floor))))))
 
 (defn perform-effect!
   "Execute a side effect. Returns {:uf/env {...}} for env updates, or nil."
@@ -841,7 +872,8 @@
                     :pos/x init-x
                     :pos/y init-y
                     :buddy/energy 0.8
-                    :surface/offset-x nil})
+                    :surface/offset-x nil
+                    :buddy/climb-direction nil})
      :uf/fxs [[:dom/fx.inject-css (make-sprite-css)]
               [:dom/fx.set-transform (:dom/container dom-refs) init-x init-y]
               [:dom/fx.add-click-handler (:dom/el dom-refs)]
