@@ -242,8 +242,6 @@
       :dom/fx.add-drag-handler
       (let [[container-node] args
             !drag-state (atom {:drag/last-x nil :drag/last-y nil :drag/last-t nil :vel/x 0 :vel/y 0})
-            move-handler (atom nil)
-            up-handler (atom nil)
             down-handler
             (fn [e]
               (.preventDefault e)
@@ -255,33 +253,29 @@
                 (dispatch-fn [[:buddy/ax.env-merge
                                :drag/data {:drag/active? true :pos/x x :pos/y y :vel/x 0 :vel/y 0}]
                               [:buddy/ax.enter-state :bs/dragging]])
-                (reset! move-handler
-                        (fn [me]
-                          (let [mx (.-clientX me)
-                                my (.-clientY me)
-                                mt (js/Date.now)
-                                drag-last-x (:drag/last-x @!drag-state)
-                                drag-last-y (:drag/last-y @!drag-state)
-                                drag-last-t (:drag/last-t @!drag-state)
-                                dt (max 1 (- mt (or drag-last-t mt)))
-                                vx (* (/ (- mx (or drag-last-x mx)) dt) 8)
-                                vy (* (/ (- my (or drag-last-y my)) dt) 8)]
-                            (reset! !drag-state {:drag/last-x mx :drag/last-y my :drag/last-t mt
-                                                 :vel/x vx :vel/y vy})
-                            (dispatch-fn [[:buddy/ax.env-merge
-                                           :drag/data {:drag/active? true :pos/x mx :pos/y my
-                                                       :vel/x vx :vel/y vy}]]))))
-                (reset! up-handler
-                        (fn [_ue]
-                          (let [vx (:vel/x @!drag-state)
-                                vy (:vel/y @!drag-state)]
-                            (.removeEventListener js/document "mousemove" @move-handler)
-                            (.removeEventListener js/document "mouseup" @up-handler)
-                            (dispatch-fn [[:buddy/ax.env-merge
-                                           :drag/data {:drag/active? false :pos/x nil :pos/y nil :vel/x 0 :vel/y 0}]
-                                          [:buddy/ax.drag-release vx vy]]))))
-                (.addEventListener js/document "mousemove" @move-handler)
-                (.addEventListener js/document "mouseup" @up-handler)))]
+                (let [move-fn
+                      (fn [me]
+                        (let [mx (.-clientX me)
+                              my (.-clientY me)
+                              mt (js/Date.now)
+                              {:drag/keys [last-x last-y last-t]} @!drag-state
+                              dt (max 1 (- mt (or last-t mt)))
+                              vx (* (/ (- mx (or last-x mx)) dt) 8)
+                              vy (* (/ (- my (or last-y my)) dt) 8)]
+                          (reset! !drag-state {:drag/last-x mx :drag/last-y my :drag/last-t mt
+                                               :vel/x vx :vel/y vy})
+                          (dispatch-fn [[:buddy/ax.env-merge
+                                         :drag/data {:drag/active? true :pos/x mx :pos/y my
+                                                     :vel/x vx :vel/y vy}]])))
+                      up-fn
+                      (fn [_ue]
+                        (let [{:vel/keys [x y]} @!drag-state]
+                          (.removeEventListener js/document "mousemove" move-fn)
+                          (dispatch-fn [[:buddy/ax.env-merge
+                                         :drag/data {:drag/active? false :pos/x nil :pos/y nil :vel/x 0 :vel/y 0}]
+                                        [:buddy/ax.drag-release x y]])))]
+                  (.addEventListener js/document "mousemove" move-fn)
+                  (.addEventListener js/document "mouseup" up-fn #js {:once true}))))]
         (when container-node
           (.addEventListener container-node "mousedown" down-handler)
           {:uf/env {:env/drag-handler down-handler}}))
