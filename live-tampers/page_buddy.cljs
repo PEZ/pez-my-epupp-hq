@@ -242,10 +242,19 @@
         nil)
 
       :dom/fx.set-transform
-      (let [[node x y] args]
+      (let [[node x y] args
+            on-surface? (and (:buddy/current-surface @!state)
+                             (:surface/offset-x @!state))]
         (when node
-          (aset (.-style node) "transform"
-                (str "translate3d(" x "px," y "px,0)")))
+          (let [mode (if on-surface? "absolute" "fixed")]
+            (when (not= (.. node -style -position) mode)
+              (set! (.. node -style -position) mode))
+            (if on-surface?
+              (aset (.-style node) "transform"
+                    (str "translate3d(" (+ x js/window.scrollX) "px,"
+                         (+ y js/window.scrollY) "px,0)"))
+              (aset (.-style node) "transform"
+                    (str "translate3d(" x "px," y "px,0)")))))
         nil)
 
       :dom/fx.cancel-raf
@@ -948,11 +957,6 @@
 
       :buddy/ax.tick
       (let [state (assoc state :buddy/energy (update-energy (or (:buddy/energy state) 0.8) (:buddy/state state)))
-            state (if (and (:buddy/current-surface state) (:surface/offset-x state))
-                    (if-let [[vx vy] (derive-viewport-pos state)]
-                      (assoc state :pos/x vx :pos/y vy)
-                      state)
-                    state)
             buddy-state (:buddy/state state)
             state-end (:buddy/state-end state)
             state-timer (:buddy/state-timer state)
