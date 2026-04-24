@@ -1466,4 +1466,48 @@
   @!env
   (select-keys @!env [:mouse/x :mouse/y])
 
+  ;; -- Wall state inspection --
+  (select-keys @!state [:buddy/state :buddy/climb-direction :surface/offset-x
+                         :buddy/current-surface :buddy/facing :buddy/energy])
+  (->> (:surfaces/visible @!env)
+       (filter #(contains? (:surface/faces %) :surface/left-wall))
+       (mapv #(select-keys % [:geom/left :geom/right :geom/top :geom/bottom
+                               :geom/height :surface/faces])))
+
+  ;; -- Force wall climb (nearest tall wall) --
+  (let [surfaces (:surfaces/visible @!env)
+        wall (first (filter #(> (:geom/height %) 200) surfaces))
+        el (:dom/el wall)
+        rect (.getBoundingClientRect el)]
+    (dispatch! [[:buddy/ax.assoc
+                 :buddy/current-surface {:dom/el el}
+                 :surface/offset-x (/ (.-height rect) 2)
+                 :buddy/climb-direction :climb/up
+                 :buddy/facing :facing/right
+                 :pos/x (- (.-left rect) cat-h)]
+                [:buddy/ax.enter-state :bs/climbing]]))
+
+  ;; -- Force climb-idle --
+  (dispatch! [[:buddy/ax.enter-state :bs/climb-idle]])
+
+  ;; -- Force wall-sliding --
+  (dispatch! [[:buddy/ax.enter-state :bs/wall-sliding]])
+
+  ;; -- Detach from wall (fall) --
+  (dispatch! [[:buddy/ax.assoc
+               :buddy/current-surface nil
+               :surface/offset-x nil]
+              [:buddy/ax.enter-state :bs/falling]])
+
+  ;; -- Reset to floor --
+  (dispatch! [[:buddy/ax.assoc
+               :buddy/current-surface nil
+               :surface/offset-x nil
+               :buddy/climb-direction nil
+               :pos/y (floor-y)]
+              [:buddy/ax.enter-state :bs/idle]])
+
+  ;; -- Check CSS transform --
+  (.. (:dom/el @!state) -style -transform)
+
   :rcf/ok)
