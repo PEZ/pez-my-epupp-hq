@@ -621,7 +621,7 @@
 
 
 (defn handle-action
-  "Pure action handler. Returns {:uf/db :uf/fxs :uf/dxs} or nil."
+  "Pure action handler. Returns {:uf/db :uf/fxs :uf/dxs :uf/env} or nil."
   [state uf-data action]
   (let [[op & args] action
         now (:system/now uf-data)]
