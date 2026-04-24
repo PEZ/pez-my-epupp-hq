@@ -1652,4 +1652,43 @@
   ;; -- Check CSS transform --
   (.. (:dom/el @!state) -style -transform)
 
+  ;; -- Force corner transition (to climbing) --
+  (dispatch! [[:buddy/ax.assoc
+               :buddy/transition-target :bs/climbing]
+              [:buddy/ax.enter-state :bs/corner-transition]])
+
+  ;; -- Force ceiling walk (nearest tall element) --
+  (let [surfaces (:surfaces/visible @!env)
+        tall (first (filter #(and (> (:geom/height %) 200)
+                                  (> (:geom/width %) cat-w)) surfaces))
+        el (:dom/el tall)
+        rect (.getBoundingClientRect el)]
+    (dispatch! [[:buddy/ax.assoc
+                 :buddy/current-surface {:dom/el el}
+                 :surface/offset-x (/ (.-width rect) 2)
+                 :buddy/on-ceiling true
+                 :buddy/climb-direction nil
+                 :pos/x (+ (.-left rect) (/ (.-width rect) 2))
+                 :pos/y (.-bottom rect)]
+                [:buddy/ax.enter-state :bs/ceiling-walking]]))
+
+  ;; -- Force ceiling idle --
+  (dispatch! [[:buddy/ax.enter-state :bs/ceiling-idle]])
+
+  ;; -- Detach from ceiling (fall) --
+  (dispatch! [[:buddy/ax.assoc
+               :buddy/on-ceiling nil
+               :buddy/current-surface nil
+               :surface/offset-x nil]
+              [:buddy/ax.enter-state :bs/falling]])
+
+  ;; -- Check surface faces (ceiling detection) --
+  (->> (:surfaces/visible @!env)
+       (filter #(contains? (:surface/faces %) :surface/ceiling))
+       (mapv #(select-keys % [:geom/left :geom/top :geom/bottom
+                               :geom/width :geom/height :surface/faces])))
+
+  ;; -- Current surface type --
+  (derive-surface-type @!state)
+
   :rcf/ok)
