@@ -6,9 +6,9 @@ Phases 0–3 are complete and archived in `page_buddy_behavior_plan_phases_0-3.m
 
 ---
 
-## Phase 4: Scroll-Aware Surface Attachment
+## Phase 4: Scroll-Aware Surface Attachment ✅
 
-The cat currently stores position as absolute viewport coordinates. When the page scrolls, elements move but the cat doesn't — it floats in space until `check-surface-validity` detects the surface left the viewport and the cat falls. This phase makes the cat scroll with the element it's on.
+The cat now scrolls with the surface element it's attached to. Position is stored as a surface-relative offset and the browser handles scroll tracking natively via CSS `position: absolute`.
 
 This is foundational infrastructure: the relative positioning model introduced here is the same model that wall and ceiling attachment will use later.
 
@@ -90,20 +90,22 @@ The expression `(* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config)
 
 `getBoundingClientRect` in actions is permitted — existing `tick-walking` already does it, and the SKILL.md invariant 7 allows geometry reads.
 
-### Tick Dispatch Architecture
+### Tick Dispatch Architecture (as implemented)
 
-The main tick dispatch (`:buddy/ax.tick`) gains two orchestration steps:
+Position sync is split across two actions:
 
-**1. Pre-tick refresh** (before behavior logic): Derive viewport pos from offset, update `:pos/x`/`:pos/y`. This ensures `check-surface-validity`, distance calculations, and all behavior logic see correct viewport coords.
+**1. `advance-frame`** (every ~16ms): Derives viewport pos from surface offset + live `getBoundingClientRect`, updates `:pos/x`/`:pos/y` in state, and emits `position-fxs`. This runs at frame rate, keeping viewport coords fresh for all consumers.
 
-**2. Post-tick position-fxs** (after behavior result): If attached, unconditionally emit `position-fxs` with the derived coords. This gives all surface-attached states (idle, sitting, sleeping, meowing, touching, stunned, landing, edge-contemplating) scroll-tracking for free — no per-handler position logic needed.
+**2. `ax.tick` post-tick** (every 100ms): After behavior dispatch, if still surface-attached, derives position and emits `position-fxs`. This catches position changes from walking (offset updates).
 
-**Optimization**: Read `getBoundingClientRect` once at the start of the tick, pass the rect through. Eliminates 2-3 redundant calls per tick.
+**Deviation from original plan**: The pre-tick derive was removed — it fought with `advance-frame` for position authority, causing oscillation. The `advance-frame` handler is the primary position sync.
+
+**CSS scroll tracking**: The `set-transform` effect auto-switches between `position: fixed` (floor/air) and `position: absolute` (on surface), converting viewport coords to document-absolute coords (`+ scrollX/Y`). The browser handles scroll natively — zero JS position updates needed during scroll.
 
 ```
-Energy update → PRE-TICK REFRESH (rect read, pos derivation)
-  → Surface validity check → Timeout transitions → Behavior dispatch
-  → POST-TICK position-fxs emission
+advance-frame: sprite animation + position derive (if attached) + set-transform
+ax.tick: energy update → surface validity → behavior dispatch → post-tick position-fxs
+scroll event: on-scroll action (env update, large-scroll hit check) — NO position update needed
 ```
 
 ### Per-Handler Changes
@@ -183,23 +185,29 @@ Every place that currently does `(assoc state :buddy/current-surface nil)` gains
 - Surface-lost handler in tick dispatch
 - Floor landing in `tick-jumping`
 
-### Scroll Jitter: Follow-up Optimization
+### Scroll Jitter: Resolved ✅
 
-At 10Hz tick rate, a fast scroll produces visible lag — the element moves at 60fps but the cat updates at 10Hz. A visual-only `requestAnimationFrame` position update in the scroll handler (direct DOM write, no state mutation) would eliminate this. Not a blocker — note as a follow-up refinement.
+The original plan noted scroll jitter as a follow-up. The CSS `position: absolute` approach resolved it completely — the browser scrolls the cat with the page natively, eliminating the JS update lag entirely. This is better than the originally planned rAF visual-only update because it requires zero JS during scroll.
 
-### Migration Steps
+### Migration Steps (all complete ✅)
 
-Each step is independently testable and leaves the system shippable:
+Each step was independently tested and left the system shippable:
 
-1. **Infrastructure**: Add `cat-w`/`cat-h` constants, helpers (`derive-viewport-pos`, `offset-from-viewport`, `surface-walk-bounds`, `on-surface?`), add `:surface/offset-x nil` to `init-action`. Add horizontal air resistance (`vx *= 0.95` in `tick-jumping`). Add `:default` branch to `enter-state-action` (→ `:bs/falling` with warning). Switch `scan-surfaces-data` exclusion from ID-based to class-based (`.page-buddy-element`). No behavior changes.
+1. ✅ **Infrastructure** (`197a197`): `cat-w`/`cat-h` constants, helpers, `:surface/offset-x nil` in init, horizontal air resistance, `enter-state-action` default branch, class-based scan exclusion.
 
-2. **Atomic offset system**: Landing stores offset, `tick-walking` uses offset (surface branch), pre-tick refresh derives viewport pos, post-tick emits position-fxs. Slim surface map to `{:dom/el el}`. This is one atomic step — offset-store, offset-walk, and viewport-refresh are a semantic unit that can't be shipped separately.
+2. ✅ **Atomic offset system** (`1040845`): Landing stores offset, `tick-walking` surface branch uses offset, post-tick emits position-fxs. Slim surface map to `{:dom/el el}`.
 
-3. **Scroll handler → action**: Replace conditional being-hit in effect with `:buddy/ax.on-scroll` action. Attached cats ignore large-scroll hits.
+3. ✅ **Scroll handler → action** (`814f61d`): `[:buddy/ax.on-scroll]` action. Attached cats ignore large-scroll hits.
 
-4. **Detach cleanup**: Add `:surface/offset-x nil` to all detach sites. Add being-hit detach. Add stunned→falling for mid-air cats.
+4. ✅ **Detach cleanup** (`31170aa`): All detach sites clear `:surface/offset-x`. Being-hit detaches. Stunned→falling for mid-air cats.
 
-5. **Verification**: Walk all FSM transitions in REPL. Verify floor behavior unchanged. Verify attached scroll behavior. Verify detach from each trigger.
+5. ✅ **Verification**: All FSM transitions walked in REPL. Floor behavior unchanged. Surface attachment, walking, detach all verified.
+
+**Post-plan fixes**:
+- `c9efb5f`: `start!` adds `.page-buddy-element` class (the `create-buddy` effect is dead code, `start!` creates DOM directly)
+- `481df31`: `advance-frame` syncs surface position every frame (~16ms) to reduce scroll lag
+- Removed pre-tick `derive-viewport-pos` from `ax.tick` — fought with `advance-frame` causing oscillation
+- `ce9d1d4`: CSS `position: absolute` for surface-attached scroll tracking — browser handles scroll natively, zero jitter
 
 ### Edge Cases
 
@@ -654,15 +662,9 @@ Scenes: Ceiling Traverse, Full Perimeter Walk, Nap on Warm Spot
 
 Lessons from [Shimeji prior art analysis](shimeji_prior_art.md). These improvements apply across phases and should be implemented as infrastructure alongside Phase 4 or at the start of Phase 5.
 
-### Universal Recovery Fallback (Phase 4)
+### Universal Recovery Fallback (Phase 4) ✅
 
-Shimeji's `Fall` behavior is the catch-all — when no behavior's conditions are met, the mascot falls. Page buddy lacks this safety net.
-
-**`enter-state-action` default branch**: Currently the `case` has no default. An unknown state silently returns `nil`, and the transition is a no-op. Add a `:default` branch that logs a warning and transitions to `:bs/falling`.
-
-**Watchdog timer**: If any state persists for more than 10 seconds without a meaningful transition, force `:bs/falling`. One-time infrastructure that future-proofs all states.
-
-Implementation: add to Phase 4 migration step 1 (infrastructure).
+Implemented: `enter-state-action` default branch transitions to `:bs/falling` with `console.warn`.
 
 ### Surface-Valid Transition Gate (Phase 5a prerequisite)
 
@@ -702,19 +704,9 @@ Beyond surface-validity, constrain behavior *sequences* for coherence:
 
 Implement as a `constrained-next-behaviors` function that `pick-next-behavior` consults. When constraints exist, filter the global pool; when `nil`, use the full pool (current behavior).
 
-### Horizontal Air Resistance (Phase 4)
+### Horizontal Air Resistance (Phase 4) ✅
 
-Page buddy has no horizontal drag — thrown cats maintain full horizontal speed. Shimeji uses `RegistanceX=0.05` (5% speed loss per tick).
-
-**Add to `tick-jumping`**:
-```clojure
-(def air-drag-x 0.95)
-new-vx (* vx air-drag-x)
-```
-
-Improves: throw arcs (deceleration), jump arcs (subtle asymmetry), wall-jump trajectories (natural deceleration toward landing). One line, significant visual improvement.
-
-Implementation: add to Phase 4 migration step 1 (infrastructure). Config key: `:cfg/air-drag-x 0.95`.
+Implemented: `vx *= 0.95` in `tick-jumping`. Improves throw arcs, jump arcs, and future wall-jump trajectories.
 
 ### Curious Climber Scene (Phase 5a)
 
@@ -747,9 +739,9 @@ Shimeji has Walk/Run/Crawl. Formalize the stalking speed already mentioned in th
 
 Used by Cat Hunting scene. Ensure animation frame rate scales with speed.
 
-### Class-Based DOM Exclusion (Phase 4)
+### Class-Based DOM Exclusion (Phase 4) ✅
 
-Shimeji insight: hardcoded DOM IDs limit extensibility. `scan-surfaces-data` filters by `id="page-buddy-container"` and `id="page-buddy"`. Switch to CSS class-based exclusion (`.page-buddy-element`). Near-zero cost, future-proofs multi-buddy.
+Implemented: `scan-surfaces-data` excludes elements with `.page-buddy-element` class. `start!` adds this class to container and el elements.
 
 ## Sprite Wishes (no code dependency)
 
@@ -782,7 +774,9 @@ Sprites that would enhance behavior if they existed:
 
 - Rotation transforms are GPU-composited (same perf cost as existing `scaleX(-1)`)
 - Surface scanning adds wall/ceiling face analysis — same `getBoundingClientRect` call, slightly more processing, still well within 0.5ms budget
-- Relative positioning requires re-computing container position from element rect each tick — one `getBoundingClientRect` per tick while wall/ceiling-attached. Acceptable at 100ms tick interval.
+- `position: absolute` for surface-attached cats eliminates JS scroll tracking entirely — the browser composites the scroll natively
+- `advance-frame` calls `getBoundingClientRect` once per frame (~16ms) when surface-attached, for position derivation. Acceptable — single DOM read, GPU-composited output
+- `ax.tick` (100ms) calls `getBoundingClientRect` for post-tick position sync and surface validity checks
 
 ---
 
