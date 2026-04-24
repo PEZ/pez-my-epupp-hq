@@ -23,28 +23,40 @@ Architecture skill for the page buddy live-tamper — an animated cat that walks
 
 ## Architecture: Uniflow Without Replicant
 
-Page buddy adapts Uniflow for direct DOM manipulation in SCI. No Replicant views, no enrichment system. The dispatch loop builds `uf-data` manually from `!env` snapshots.
+Page buddy adapts Uniflow for direct DOM manipulation in SCI. No Replicant views, no enrichment system. The dispatch loop (`make-dispatch` factory) builds `uf-data` manually from `!env` snapshots and is the sole writer to both atoms.
 
-### Three Atoms
+### Two Atoms, One Writer
 
-| Atom | Scope | Purpose | Access |
+| Atom | Scope | Purpose | Writer |
 |------|-------|---------|--------|
-| `!state` | `defonce` | Application state: buddy-state, position, animation, el/container refs, raf-id | Only `dispatch!` reads/writes |
-| `!env` | `defonce` | Environment: mouse-x, mouse-y, scroll-y, handler refs | Event handlers write directly; `dispatch!` snapshots once per batch |
-| `!timing` | Local to `make-raf-loop` | Frame/tick delta accumulators | Only the RAF callback reads/writes |
+| `!state` | `defonce` | Application state: buddy-state, position, animation, el/container refs, raf-id | Only `dispatch!` |
+| `!env` | `defonce` | Environment: mouse-x, mouse-y, scroll-y, drag data, surfaces, handler refs | Only `dispatch!` |
 
-`!state` is application truth. `!env` is an input sensor — analogous to enrichment data, not managed state. `!timing` is a frame-local accumulator invisible to the rest of the system.
+A third atom, `!timing`, is local to `make-raf-loop` (frame/tick delta accumulators) — invisible to the rest of the system.
+
+`!state` is application truth. `!env` is an input sensor — analogous to enrichment data, not managed state. Both are written exclusively by the dispatch loop.
+
+### Dispatch Factory
+
+`dispatch!` is created by `(make-dispatch !state !env)` — a factory that closes over both atoms. This eliminates `(declare dispatch!)` and makes the atoms threadable for testing.
+
+```clojure
+(def dispatch! (make-dispatch !state !env))
+```
 
 ### uf-data Contract
 
 `dispatch!` snapshots `!env` once at batch start and builds `uf-data`:
 
 ```clojure
-{:system/now   (js/Date.now)
- :roll         (rand)
- :mouse/x      (:mouse-x env)
- :mouse/y      (:mouse-y env)
- :scroll/y     (:scroll-y env)
+{:system/now          (js/Date.now)
+ :roll                (rand)
+ :mouse/x             (:mouse-x env)
+ :mouse/y             (:mouse-y env)
+ :scroll/y            (:scroll-y env)
+ :surfaces/visible    (:surfaces env)
+ :drag/data           (:drag env)
+ :env/drag-handler    (:drag-handler env)
  :env/mouse-handler   (:mouse-handler env)
  :env/click-handler   (:click-handler env)
  :env/scroll-handler  (:scroll-handler env)}
@@ -52,15 +64,30 @@ Page buddy adapts Uniflow for direct DOM manipulation in SCI. No Replicant views
 
 Actions read environment data exclusively through `uf-data`. Handler refs appear in `uf-data` so `ax.stop` can pass them to cleanup effects without reading `!env`.
 
+### Action Return Contract
+
+Actions return a map with any combination of these keys, or `nil`:
+
+| Key | Purpose | Consumer |
+|-----|---------|----------|
+| `:uf/db` | New state map | Dispatch loop → `reset! !state` |
+| `:uf/fxs` | Effect vectors to execute | Dispatch loop → `perform-effect!` |
+| `:uf/dxs` | Derived actions to dispatch next | Dispatch loop → recursive `dispatch!` |
+| `:uf/env` | Env delta map to merge | Dispatch loop → `swap! !env merge` |
+
+### Effect Return Contract
+
+Effects (`perform-effect!`) return `nil` or `{:env {...}}` for env deltas. The dispatch loop merges returned `:env` maps into `!env`. Effects never touch atoms directly.
+
 ## Non-Negotiable Invariants
 
 All Uniflow invariants apply. These are the page-buddy-specific reinforcements:
 
 1. **`!state` access**: Only `dispatch!` may `deref` or `reset!` `!state`. Actions receive state as a plain map parameter.
-2. **`!env` writes**: Only event handler effects and `!env` reset may mutate `!env`. Actions never touch `!env`.
-3. **Action purity**: `handle-action` receives `(state uf-data action)` → returns `{:uf/db :uf/fxs :uf/dxs}` or `nil`. No side effects. No atom access. No `js/` calls except `js/Math` and `js/window.innerWidth`/`innerHeight` for layout geometry.
-4. **Effect isolation**: `perform-effect!` receives an effect vector. It never reads `@!state`. It may write to `!env` (handler registration) and call `dispatch!` (event forwarding).
-5. **Entry point discipline**: `start!` and `stop!` dispatch actions. The RAF callback dispatches actions. Event handlers either write to `!env` or dispatch actions. None of them read `@!state` for decisions.
+2. **`!env` access**: Only `dispatch!` (the `make-dispatch` loop) may read or write `!env`. Event handler callbacks dispatch `[:buddy/ax.env-merge ...]` actions. Effects return `{:env {...}}` data for the dispatch loop to merge.
+3. **Action purity**: `handle-action` receives `(state uf-data action)` → returns `{:uf/db :uf/fxs :uf/dxs :uf/env}` or `nil`. No side effects. No atom access. No `js/` calls except `js/Math` and `js/window.innerWidth`/`innerHeight` for layout geometry.
+4. **Effect isolation**: `perform-effect!` receives `[dispatch-fn effect]`. It never reads atoms. It returns `{:env {...}}` for env deltas or `nil`. Async callbacks it installs communicate via `dispatch-fn` (dispatching env-merge actions), never via atom writes.
+5. **Entry point discipline**: `start!` and `stop!` dispatch actions. The RAF callback dispatches actions. Event handlers dispatch actions. None of them read `@!state` for decisions or write to `!env` directly.
 6. **Geometry reads**: `js/window.innerWidth`, `js/window.innerHeight`, and `floor-y` are layout queries, not state. They may appear in actions (physics needs the ground plane). They are not violations.
 
 ### The One Exception
@@ -143,12 +170,15 @@ Euler integration in `tick-jumping`:
 :buddy/ax.enter-state    — FSM transition
 :buddy/ax.advance-frame  — sprite frame step
 :buddy/ax.tick           — physics + behavior tick
+:buddy/ax.scan-surfaces  — trigger surface scan effect
+:buddy/ax.drag-release   — handle drag release with velocity
 :buddy/ax.react-to-click — respond to page click
-:buddy/ax.stop           — teardown
+:buddy/ax.env-merge      — merge key-value pairs into env (used by async callbacks)
+:buddy/ax.stop           — teardown (resets env via :uf/env)
 :buddy/ax.assoc          — generic state update (raf-id)
 ```
 
-All actions are namespaced `:buddy/ax.*`. Effects are namespaced by domain: `:dom/fx.*`, `:timer/fx.*`, `:log/fx.*`, `:env/fx.*`.
+All actions are namespaced `:buddy/ax.*`. Effects are namespaced by domain: `:dom/fx.*`, `:timer/fx.*`, `:log/fx.*`. Effects that register handlers return `{:env {:handler-name handler-fn}}` — no `:env/fx.*` namespace exists.
 
 ## Development Workflow
 
