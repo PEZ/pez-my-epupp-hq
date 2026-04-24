@@ -719,6 +719,10 @@
          :uf/fxs (into (anim-fxs el :anim/run)
                        (orientation-fxs el (:buddy/facing state) surface-type))})
 
+      :bs/corner-transition
+      {:uf/db (assoc base-db :buddy/state-end (+ now 300))
+       :uf/fxs (anim-fxs el :anim/idle)}
+
       (do (js/console.warn "Unknown state:" (pr-str new-bstate))
           {:uf/db base-db
            :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}))))
@@ -1048,15 +1052,16 @@
                                     rect (.getBoundingClientRect surf-el)]
                                 (> (.-height rect) 200)))]
         (cond
-          ;; 15% chance: climb down the element side
+          ;; 15% chance: climb down the element side via corner transition
           (and can-climb-down? (< roll 0.15))
           (let [side (if (= facing :facing/left) :surface/left-wall :surface/right-wall)
                 wall-facing (if (= side :surface/left-wall) :facing/right :facing/left)]
             {:uf/db (assoc state
                            :buddy/climb-direction :climb/down
                            :buddy/facing wall-facing
-                           :surface/offset-x 0)
-             :uf/dxs [[:buddy/ax.enter-state :bs/climbing]]})
+                           :surface/offset-x 0
+                           :buddy/transition-target :bs/climbing)
+             :uf/dxs [[:buddy/ax.enter-state :bs/corner-transition]]})
 
           ;; 40% chance: jump off
           (< roll 0.55)
@@ -1353,6 +1358,11 @@
                       (let [next (if (< (rand) 0.7) :bs/touching :bs/idle)]
                         {:uf/dxs [[:buddy/ax.enter-state next]]})
                       {:uf/dxs [[:buddy/ax.enter-state :bs/falling]]}))
+                  :bs/corner-transition
+                  (when (and state-end (> now state-end))
+                    (let [target (or (:buddy/transition-target state) :bs/idle)]
+                      {:uf/db (dissoc state :buddy/transition-target)
+                       :uf/dxs [[:buddy/ax.enter-state target]]}))
                   nil)))
             result (if behavior-result
                      (update behavior-result :uf/db #(or % state))
