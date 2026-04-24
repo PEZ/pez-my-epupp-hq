@@ -94,7 +94,8 @@
                                 (> right 0)
                                 (> top 50))
                        (let [faces (cond-> #{:surface/floor}
-                                     (> h min-wall-height) (conj :surface/left-wall :surface/right-wall))]
+                                     (> h min-wall-height) (conj :surface/left-wall :surface/right-wall)
+                                     (and (> h min-wall-height) (> bottom 0) (< top vh)) (conj :surface/ceiling))]
                          {:dom/el el
                           :geom/top top
                           :geom/left left
@@ -253,17 +254,21 @@
       (let [rect (.getBoundingClientRect el)
             offset-x (:surface/offset-x state)
             climb-dir (:buddy/climb-direction state)]
-        (if climb-dir
-          (if (<= (:pos/x state) (.-left rect))
-            ;; Left wall
-            [(- (.-left rect) cat-h)
-             (+ (.-top rect) (or offset-x 0))]
-            ;; Right wall
-            [(.-right rect)
-             (+ (.-top rect) (or offset-x 0))])
-          ;; Floor
+        (if (:buddy/on-ceiling state)
+          ;; Ceiling — walk along bottom edge, cat hangs below
           [(+ (.-left rect) (or offset-x 0))
-           (- (.-top rect) cat-h)])))))
+           (.-bottom rect)]
+          (if climb-dir
+            (if (<= (:pos/x state) (.-left rect))
+              ;; Left wall
+              [(- (.-left rect) cat-h)
+               (+ (.-top rect) (or offset-x 0))]
+              ;; Right wall
+              [(.-right rect)
+               (+ (.-top rect) (or offset-x 0))])
+            ;; Floor
+            [(+ (.-left rect) (or offset-x 0))
+             (- (.-top rect) cat-h)]))))))
 
 (defn surface-walk-bounds
   "Offset bounds [min max] for walking on a surface element."
@@ -285,6 +290,7 @@
         (let [rect (.getBoundingClientRect el)
               climb-dir (:buddy/climb-direction state)]
           (cond
+            (:buddy/on-ceiling state) :surface/ceiling
             (= climb-dir :climb/up)   (if (<= (:pos/x state) (.-left rect))
                                         :surface/left-wall
                                         :surface/right-wall)
@@ -719,6 +725,17 @@
          :uf/fxs (into (anim-fxs el :anim/run)
                        (orientation-fxs el (:buddy/facing state) surface-type))})
 
+      :bs/ceiling-walking
+      (let [surface-type :surface/ceiling]
+        {:uf/db (assoc base-db :buddy/on-ceiling true)
+         :uf/fxs (into (anim-fxs el :anim/walk)
+                       (orientation-fxs el (:buddy/facing state) surface-type))})
+
+      :bs/ceiling-idle
+      {:uf/db (assoc base-db :buddy/on-ceiling true)
+       :uf/fxs (into (anim-fxs el :anim/idle)
+                     (orientation-fxs el (:buddy/facing state) :surface/ceiling))}
+
       :bs/corner-transition
       {:uf/db (assoc base-db :buddy/state-end (+ now 300))
        :uf/fxs (anim-fxs el :anim/idle)}
@@ -959,10 +976,25 @@
       {:uf/db (assoc state :surface/offset-x climb-goal)
        :uf/dxs [[:buddy/ax.enter-state :bs/climb-idle]]}
 
-      ;; Hit top of element
+      ;; Hit top of element — chance to go onto ceiling
       (< new-offset 0)
-      {:uf/db (assoc state :surface/offset-x 0)
-       :uf/dxs [[:buddy/ax.enter-state :bs/climb-idle]]}
+      (let [surf-el (:dom/el current-surface)
+            rect (.getBoundingClientRect surf-el)
+            has-ceiling? (and (> (.-width rect) cat-w)
+                              (> (.-height rect) 200))
+            go-ceiling? (and has-ceiling? (< (rand) 0.3))]
+        (if go-ceiling?
+          (let [ceiling-offset (if (<= (:pos/x state) (.-left rect))
+                                 0
+                                 (- (.-width rect) cat-w))]
+            {:uf/db (assoc state
+                           :surface/offset-x ceiling-offset
+                           :buddy/climb-direction nil
+                           :buddy/on-ceiling true
+                           :buddy/transition-target :bs/ceiling-walking)
+             :uf/dxs [[:buddy/ax.enter-state :bs/corner-transition]]})
+          {:uf/db (assoc state :surface/offset-x 0)
+           :uf/dxs [[:buddy/ax.enter-state :bs/climb-idle]]}))
 
       ;; Hit bottom of element — detach and fall
       (> new-offset max-offset)
@@ -1078,6 +1110,72 @@
              :uf/dxs [[:buddy/ax.enter-state :bs/walking]]}))))))
 
 
+
+(defn tick-ceiling-walking
+  "Tick handler for ceiling walking — traverse bottom edge of element."
+  [state _uf-data]
+  (let [{:buddy/keys [facing current-surface]
+         :surface/keys [offset-x]} state
+        speed (:cfg/walk-speed config)
+        dx (if (= facing :facing/right) speed (- speed))
+        surf-el (:dom/el current-surface)
+        rect (.getBoundingClientRect surf-el)
+        max-offset (- (.-width rect) cat-w)
+        new-offset (+ (or offset-x 0) dx)]
+    (cond
+      ;; Hit left edge — drop or corner-transition
+      (< new-offset 0)
+      {:uf/db (assoc state
+                     :buddy/on-ceiling nil
+                     :buddy/current-surface nil
+                     :surface/offset-x nil)
+       :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}
+
+      ;; Hit right edge
+      (> new-offset max-offset)
+      {:uf/db (assoc state
+                     :buddy/on-ceiling nil
+                     :buddy/current-surface nil
+                     :surface/offset-x nil)
+       :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}
+
+      ;; Normal walk
+      :else
+      {:uf/db (assoc state :surface/offset-x new-offset)})))
+
+(defn tick-ceiling-idle
+  "Tick handler for ceiling-idle — cling to ceiling, decide next action."
+  [state uf-data]
+  (let [now (:system/now uf-data)
+        {:buddy/keys [state-timer]} state
+        elapsed (- now (or state-timer now))]
+    (when (> elapsed 1500)
+      (let [roll (:rng/roll uf-data)
+            energy (or (:buddy/energy state) 0.5)]
+        (cond
+          ;; Low energy → drop
+          (and (< energy 0.3) (< roll 0.4))
+          {:uf/db (assoc state
+                         :buddy/on-ceiling nil
+                         :buddy/current-surface nil
+                         :surface/offset-x nil)
+           :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}
+
+          ;; Resume walking
+          (< roll 0.5)
+          {:uf/dxs [[:buddy/ax.enter-state :bs/ceiling-walking]]}
+
+          ;; Drop off ceiling
+          (< roll 0.7)
+          {:uf/db (assoc state
+                         :buddy/on-ceiling nil
+                         :buddy/current-surface nil
+                         :surface/offset-x nil)
+           :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}
+
+          ;; Stay (reset timer)
+          :else
+          {:uf/db (assoc state :buddy/state-timer now)})))))
 
 (defn tick-dragging
   "Tick handler for dragging — follow drag position, handle break-free."
@@ -1347,6 +1445,8 @@
                   :bs/edge-contemplating (tick-edge-contemplating state uf-data)
                   :bs/dragging (tick-dragging state uf-data)
                   :bs/cursor-chasing (tick-cursor-chasing state uf-data)
+                  :bs/ceiling-walking (tick-ceiling-walking state uf-data)
+                  :bs/ceiling-idle (tick-ceiling-idle state uf-data)
                   :bs/landing
                   (when (and state-end (> now state-end))
                     (let [next (if (< (rand) 0.4) :bs/touching :bs/idle)]
