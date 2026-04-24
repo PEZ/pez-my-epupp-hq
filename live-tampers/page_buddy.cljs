@@ -925,16 +925,26 @@
                 (assoc-in [:uf/db :buddy/frame-count] frames)))))
 
       :buddy/ax.advance-frame
-      (let [{:dom/keys [el]
-             :buddy/keys [frame frame-count]} state]
-        (when (and el (pos? frame-count))
-          (let [{:sprite/keys [w]} page-buddy-sprites/frame-size
-                s (:cfg/scale config)
-                next-frame (mod (inc frame) frame-count)
-                offset (* next-frame w s)]
-            {:uf/db (assoc state :buddy/frame next-frame)
-             :uf/fxs [[:dom/fx.set-style el "backgroundPosition"
-                       (str "-" offset "px 0")]]})))
+      (let [{:dom/keys [el container]
+             :buddy/keys [frame frame-count]} state
+            sprite-fxs (when (and el (pos? frame-count))
+                         (let [{:sprite/keys [w]} page-buddy-sprites/frame-size
+                               s (:cfg/scale config)
+                               next-frame (mod (inc frame) frame-count)
+                               offset (* next-frame w s)]
+                           [[:dom/fx.set-style el "backgroundPosition"
+                             (str "-" offset "px 0")]]))
+            frame-db (if (and el (pos? frame-count))
+                       (assoc state :buddy/frame (mod (inc frame) frame-count))
+                       state)
+            [pos-fxs pos-db] (if (and (:buddy/current-surface frame-db) (:surface/offset-x frame-db))
+                               (if-let [[vx vy] (derive-viewport-pos frame-db)]
+                                 [(position-fxs container vx vy)
+                                  (assoc frame-db :pos/x vx :pos/y vy)]
+                                 [nil frame-db])
+                               [nil frame-db])]
+        {:uf/db pos-db
+         :uf/fxs (into (or sprite-fxs []) pos-fxs)})
 
       :buddy/ax.tick
       (let [state (assoc state :buddy/energy (update-energy (or (:buddy/energy state) 0.8) (:buddy/state state)))
