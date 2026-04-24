@@ -1616,7 +1616,21 @@
        (mapv #(select-keys % [:geom/left :geom/right :geom/top :geom/bottom
                                :geom/height :surface/faces])))
 
-  ;; -- Force wall climb (nearest tall wall) --
+  ;; -- Force wall climb (right side of nearest tall element) --
+  (let [surfaces (:surfaces/visible @!env)
+        wall (first (filter #(> (:geom/height %) 200) surfaces))
+        el (:dom/el wall)
+        rect (.getBoundingClientRect el)]
+    (dispatch! [[:buddy/ax.assoc
+                 :buddy/current-surface {:dom/el el}
+                 :surface/offset-x (/ (.-height rect) 2)
+                 :buddy/climb-direction :climb/up
+                 :buddy/facing :facing/left
+                 :buddy/on-ceiling nil
+                 :pos/x (.-right rect)]
+                [:buddy/ax.enter-state :bs/climbing]]))
+
+  ;; -- Force wall climb (left side of nearest tall element) --
   (let [surfaces (:surfaces/visible @!env)
         wall (first (filter #(> (:geom/height %) 200) surfaces))
         el (:dom/el wall)
@@ -1626,6 +1640,7 @@
                  :surface/offset-x (/ (.-height rect) 2)
                  :buddy/climb-direction :climb/up
                  :buddy/facing :facing/right
+                 :buddy/on-ceiling nil
                  :pos/x (- (.-left rect) cat-h)]
                 [:buddy/ax.enter-state :bs/climbing]]))
 
@@ -1652,16 +1667,33 @@
   ;; -- Check CSS transform --
   (.. (:dom/el @!state) -style -transform)
 
-  ;; -- Force corner transition (to climbing) --
+  ;; -- Force corner transition (to walking — no surface needed) --
   (dispatch! [[:buddy/ax.assoc
-               :buddy/transition-target :bs/climbing]
+               :buddy/transition-target :bs/walking]
               [:buddy/ax.enter-state :bs/corner-transition]])
 
-  ;; -- Force ceiling walk (nearest tall element) --
+  ;; -- Force corner transition on wall (to ceiling) --
   (let [surfaces (:surfaces/visible @!env)
-        tall (first (filter #(and (> (:geom/height %) 200)
-                                  (> (:geom/width %) cat-w)) surfaces))
-        el (:dom/el tall)
+        wall (first (filter #(> (:geom/height %) 200) surfaces))
+        el (:dom/el wall)
+        rect (.getBoundingClientRect el)]
+    (dispatch! [[:buddy/ax.assoc
+                 :buddy/current-surface {:dom/el el}
+                 :surface/offset-x 0
+                 :buddy/climb-direction :climb/up
+                 :buddy/facing :facing/right
+                 :pos/x (- (.-left rect) cat-h)
+                 :buddy/transition-target :bs/ceiling-walking
+                 :buddy/on-ceiling true]
+                [:buddy/ax.enter-state :bs/corner-transition]]))
+
+  ;; -- Force ceiling walk (element with top above cat) --
+  (let [surfaces (:surfaces/visible @!env)
+        cat-y (:pos/y @!state)
+        ceiling (first (filter #(and (> (:geom/height %) 200)
+                                     (> (:geom/width %) cat-w)
+                                     (< (:geom/top %) cat-y)) surfaces))
+        el (:dom/el ceiling)
         rect (.getBoundingClientRect el)]
     (dispatch! [[:buddy/ax.assoc
                  :buddy/current-surface {:dom/el el}
