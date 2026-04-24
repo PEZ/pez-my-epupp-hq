@@ -1,6 +1,6 @@
 (ns page-buddy-sprites)
 
-(def frame-size {:w 48 :h 32})
+(def frame-size {:sprite/w 48 :sprite/h 32})
 
 (def walk-data "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAJAAAAAgCAYAAAD9jPHNAAAAAXNSR0IArs4c6QAAAp5JREFUeJztmbFq3EAQhv8LaVwEglGxcSdim2CMS4PjxvgBDG4MMWmcBwikdp3aj5DOhZuQ1MGkiQMpTQjm7sJ1hwpxcLi4UinkEaO9PUlYWmnszNdIaLXSzD+zM6s7QFEURVEURVEURVEURVEURVEURVEURVEURRFEz9eDjQmT5WAFAPDn94+592xs7iaLxpT6tKX/kzqTy7g43geYsS6KxrrEmDDZ2NxNFtlXNCaFNvT3mkBgThwcnmQBOTg8SVbX1gEAdJTIQ14AhG/9W2lhxOraOoaDfs7o4aAvso0ZEybf3r8FABydX2a2g4lOvnz9/Emk/W3o/7SemY+bo/PL7JyEpyQCC8j/jPcWxiGx7aP0NvBY8KG/l9K7tPQsZ1D4cgsAcHUaAABef4xz91+dBnjxLl3ts9mtiHbgagEcu/pIasNt6u+lhc1mtz07AJN4DCBg55xATOLgLgDTaYzpNBXaFQCePGkA0qBJ8KNN/Rt31s5+sADYXBzvZ/uM0d9rQEgA4KhAk3iMm7PUj1cfrnP33pxt4fmbLyLsblv/xpw2JpwzvKgFTOIxloOV7OirBZBdUTSq9HyJC8DW1uVLV/rfaxI3NopGWbnkn4nDQT8rlUWOwPP+wZgw2d7Zw6+f37NrkgJQBtkPtunlLahr/StNtMW1S3uZ0PYcju/Np/QAVLHfviZJ/9LJZQEoE5eY37hVbyt1ecgLwAX3p2v971WB+IvLPncJ/ust7hxqK4FsJAWgLl3rX+sBVJ34J60tdNG4lADAUZU41N4gZAHY2HGoGgMxCQQgt0kF21sUjdd5d1O4bCTbXPsPupfu79oPbiP3w/bBFYcmbG/krwwy2G5tVcclwIVd9OkfRaOevRAksr2zt1BfSqSmEv8fposbdsA3OsYAAAAASUVORK5CYII=")
 
@@ -27,27 +27,27 @@
 (def stunned-data "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASAAAAAgCAYAAACy9KU0AAAAAXNSR0IArs4c6QAABDdJREFUeJztmz9r20AYxl+XUvCQxYiiejO1TQkhYyDOEvIBDFkyhA51P0Chs2fP/QjtlCFLIXMJXmyDx2BMSVK8GVOEwXQIdFEH+xWv5dNfW9KpeX4gYv2znrvc+95zdzIRAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABgRSGpLzbNil0yykRENB71Np6zf3Bie53LGmgHIB1eJPnl15dnRKLRq/A7lyXQDkDyvEz6AXNrSkfHp0REdrVWd44/PtxTtVanx4f7pCXEBtqzBW7u/ydRB3RxdUslo6xs9Lwvg0MnoF0P8uzmTLNi7x+c2F76/M49FxJNQADsAk5CzfOWE9DN85bj7HROpkig/sROQKZZsXkLcz33wqq/af8D8qw9KnnWTis3d3F1SySGj5I8DCeRQL2JlYBMs2IfHZ/yHMMaxeKeXSzu2YuFRZNfd87xftugftsgEkHAx+V9cfSkoZ1xN/Z+20hNO6NKoHnR/txAAvVnq0no4aBLs9lkbQLw6elPgVwTiHNrSkSG+Cwx1u5LiyjaG51lsL77fLf2HT+/HFKjY6WqnRMolyFP2neBdHAyePcPTmxMRu8eTp7ksYCxbQKNPQTzeqiqJy4ZZWp0LGp0LCoZZSoZZfrx6b1znFJ0QHG099uGp/asXIQ7geZJexDusoRxdLqWxY3XkDgPw+EkiNVjcC87t6ZOEKjmU7gndjO3psT3+y2zJoFKOyn066idQur30/7h1Wv69vd3JtqjIt0cibp3Ozp2c7qURZUEK28PiVaJkjtdSb9t0JuPS7ehiyt1178bt/uJU/87SUC8L5d4Hx/uneGWXyHiCt+GMPp5eKO7dhLDMp21uxO8e/griRLA15dndHF1m4sARgLdJHaBZSD4NfSgJJRVpYfRnwft5KFPN+1y7oo7Jz8HygS1Lfk/zGMAP/cEulVBgyyaZHPy2b8XTIOw+qF9N3CSkZPkKgdKwt7r4KKD3Jvf6xy6J1CV9sVi0+EklUC3LnCUJMTLddzIdOixourXTTuFCE7STLt7pS5If9ZuTuXeJKrph7DamSwcKQldfvrDzodm4oB47kGKksjz7sLoEAhR9Euy1k4K/XnTTiGTJ5Olm4ujlwkaKqfpSOPWu9/127SnnfwYlSc+2U7z8dlsUhgOyOk9bpZCnf3xqLeLx29NWP3DQZd00c7JRy7Hq+y0nJTWRTut6tY0K7bscWWCkQ2er1EFwWw2SU3v6qNTx9IVeVGt1YlWzl++t8WUjDIdHZ/aREQ3378mkohUK6Tix8qh9A8HXc8E2jxvxda/k9+CySBwZ/NlEHc993UgrH4dtUukdrduHbVzAFRr9bVedDabFMajnrPxNbyNR70Cf26et2wOgDTgulS9SR8Ev4slN0mS5ZBv/8vkE+X+uTXd2GQZ4uj/B0O3XfR3TnNXAAAAAElFTkSuQmCC")
 
 (def animations
-  {:walk    {:frames 3
-             :data walk-data}
-   :idle    {:frames 8
-             :data idle-data}
-   :run     {:frames 5
-             :data run-data}
-   :sit     {:frames 10
-             :data sit-data}
-   :sleep   {:frames 12
-             :data sleep-data}
-   :jump    {:frames 8
-             :data jump-data}
-   :meow    {:frames 3
-             :data meow-data}
-   :climb   {:frames 7
-             :data climb-data}
-   :climb-idle {:frames 4
-                :data climb-idle-data}
-   :touch      {:frames 3
-                :data touch-data}
-   :being-hit  {:frames 3
-                :data being-hit-data}
-   :stunned    {:frames 6
-                :data stunned-data}})
+  {:anim/walk    {:anim/frames 3
+                  :anim/data walk-data}
+   :anim/idle    {:anim/frames 8
+                  :anim/data idle-data}
+   :anim/run     {:anim/frames 5
+                  :anim/data run-data}
+   :anim/sit     {:anim/frames 10
+                  :anim/data sit-data}
+   :anim/sleep   {:anim/frames 12
+                  :anim/data sleep-data}
+   :anim/jump    {:anim/frames 8
+                  :anim/data jump-data}
+   :anim/meow    {:anim/frames 3
+                  :anim/data meow-data}
+   :anim/climb   {:anim/frames 7
+                  :anim/data climb-data}
+   :anim/climb-idle {:anim/frames 4
+                     :anim/data climb-idle-data}
+   :anim/touch      {:anim/frames 3
+                     :anim/data touch-data}
+   :anim/being-hit  {:anim/frames 3
+                     :anim/data being-hit-data}
+   :anim/stunned    {:anim/frames 6
+                     :anim/data stunned-data}})
