@@ -61,39 +61,36 @@
   []
   (let [vw js/window.innerWidth
         vh js/window.innerHeight
-        cat-w (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config))
-        candidates (js/document.querySelectorAll
-                    "nav, header, aside, section, article, div, img, table, footer, main")
-        results (atom [])]
-    (.forEach candidates
-              (fn [el]
-                (when (and (not= (.-id el) "page-buddy-container")
-                           (not= (.-id el) "page-buddy")
-                           (.-isConnected el))
-                  (let [rect (.getBoundingClientRect el)
-                        w (.-width rect)
-                        h (.-height rect)
-                        top (.-top rect)
-                        left (.-left rect)
-                        bottom (.-bottom rect)
-                        right (.-right rect)]
-                    (when (and (> w cat-w)
-                               (> h 20)
-                               (< top vh)
-                               (> bottom 0)
-                               (< left vw)
-                               (> right 0)
-                               (> top 50)
-                               (< top (- vh 100)))
-                      (swap! results conj
-                             {:dom/el el
-                              :geom/top top
-                              :geom/left left
-                              :geom/right right
-                              :geom/bottom bottom
-                              :geom/width w
-                              :geom/height h}))))))
-    @results))
+        cat-w (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config))]
+    (->> (js/document.querySelectorAll
+          "nav, header, aside, section, article, div, img, table, footer, main")
+         (keep (fn [el]
+                 (when (and (not= (.-id el) "page-buddy-container")
+                            (not= (.-id el) "page-buddy")
+                            (.-isConnected el))
+                   (let [rect (.getBoundingClientRect el)
+                         w (.-width rect)
+                         h (.-height rect)
+                         top (.-top rect)
+                         left (.-left rect)
+                         bottom (.-bottom rect)
+                         right (.-right rect)]
+                     (when (and (> w cat-w)
+                                (> h 20)
+                                (< top vh)
+                                (> bottom 0)
+                                (< left vw)
+                                (> right 0)
+                                (> top 50)
+                                (< top (- vh 100)))
+                       {:dom/el el
+                        :geom/top top
+                        :geom/left left
+                        :geom/right right
+                        :geom/bottom bottom
+                        :geom/width w
+                        :geom/height h})))))
+         vec)))
 
 (defn find-landing-surface
   "Check if cat's feet crossed through a surface top edge during fall."
