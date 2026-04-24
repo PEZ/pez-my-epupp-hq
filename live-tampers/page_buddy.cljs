@@ -773,7 +773,7 @@
       move-result)))
 
 (defn tick-jumping
-  "Pure jumping/falling tick with gravity and surface detection."
+  "Pure jumping/falling tick with gravity, surface detection, and wall intercept."
   [state uf-data]
   (let [x (:pos/x state)
         y (:pos/y state)
@@ -805,16 +805,34 @@
                        :surface/offset-x offset-x)
          :uf/fxs (position-fxs container clamped-x surface-y)
          :uf/dxs [[:buddy/ax.enter-state land-state]]})
-      (if (>= new-y fy)
-        (let [land-state (if (> new-vy 6) :bs/stunned :bs/idle)]
-          {:uf/db (assoc state
-                         :pos/x clamped-x :pos/y fy
-                         :vel/x 0 :vel/y 0
-                         :buddy/current-surface nil :surface/offset-x nil)
-           :uf/fxs (position-fxs container clamped-x fy)
-           :uf/dxs [[:buddy/ax.enter-state land-state]]})
-        {:uf/db (assoc state :pos/x clamped-x :pos/y new-y :vel/x vx :vel/y new-vy)
-         :uf/fxs (position-fxs container clamped-x new-y)}))))
+      (let [wall-hit (when (and surfaces (not (zero? vx)))
+                       (find-wall-surface surfaces clamped-x new-y 20))]
+        (if wall-hit
+          (let [{:surface/keys [map side]} wall-hit
+                surf-el (:dom/el map)
+                rect (.getBoundingClientRect surf-el)
+                wall-facing (if (= side :surface/left-wall) :facing/right :facing/left)
+                offset-y (- (+ new-y cat-h) (.-top rect))]
+            {:uf/db (assoc state
+                           :pos/x clamped-x :pos/y new-y
+                           :vel/x 0 :vel/y 0
+                           :buddy/current-surface {:dom/el surf-el}
+                           :surface/offset-x (max 0 offset-y)
+                           :buddy/climb-direction :climb/up
+                           :buddy/facing wall-facing)
+             :uf/fxs (position-fxs container clamped-x new-y)
+             :uf/dxs [[:buddy/ax.enter-state :bs/climbing]]})
+          (if (>= new-y fy)
+            (let [land-state (if (> new-vy 6) :bs/stunned :bs/idle)]
+              {:uf/db (assoc state
+                             :pos/x clamped-x :pos/y fy
+                             :vel/x 0 :vel/y 0
+                             :buddy/current-surface nil :surface/offset-x nil)
+               :uf/fxs (position-fxs container clamped-x fy)
+               :uf/dxs [[:buddy/ax.enter-state land-state]]})
+            {:uf/db (assoc state :pos/x clamped-x :pos/y new-y :vel/x vx :vel/y new-vy)
+             :uf/fxs (position-fxs container clamped-x new-y)}))))))
+
 
 (defn attempt-wall-climb
   "Try to initiate wall climbing. Returns action map or nil.
