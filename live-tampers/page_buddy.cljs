@@ -457,9 +457,6 @@
      "  background-size: auto " (* h s) "px;"
      "  background-repeat: no-repeat;"
      "  image-rendering: pixelated;"
-     "}"
-     "#page-buddy.facing-left {"
-     "  transform: scaleX(-1);"
      "}")))
 
 (defn anim-fxs
@@ -473,10 +470,25 @@
      [:dom/fx.set-style el "backgroundSize" (str sheet-w "px " (* h s) "px")]
      [:dom/fx.set-style el "backgroundPosition" "0px 0"]]))
 
-(defn facing-fxs
-  "Effect vectors to set facing direction on an element."
-  [el direction]
-  [[:dom/fx.set-class el "facing-left" (= direction :facing/left)]])
+(def orientation-transforms
+  "Lookup: [surface-type facing] → CSS transform string."
+  {[:surface/floor :facing/right]      ""
+   [:surface/floor :facing/left]       "scaleX(-1)"
+   [:surface/left-wall :facing/right]  "rotate(-90deg)"
+   [:surface/left-wall :facing/left]   "rotate(-90deg) scaleX(-1)"
+   [:surface/right-wall :facing/right] "rotate(90deg)"
+   [:surface/right-wall :facing/left]  "rotate(90deg) scaleX(-1)"
+   [:surface/ceiling :facing/right]    "scaleY(-1)"
+   [:surface/ceiling :facing/left]     "scaleY(-1) scaleX(-1)"})
+
+(defn orientation-fxs
+  "Effect vectors to set orientation (facing + surface rotation) on an element."
+  ([el facing] (orientation-fxs el facing :surface/floor))
+  ([el facing surface-type]
+   (let [transform-str (get orientation-transforms
+                            [(or surface-type :surface/floor) facing]
+                            "")]
+     [[:dom/fx.set-style el "transform" transform-str]])))
 
 (defn position-fxs
   "Effect vectors to update container position via translate3d."
@@ -517,7 +529,7 @@
             should-face (if (< mouse-x cat-center-x) :facing/left :facing/right)]
         (when (not= should-face (:buddy/facing state))
           {:uf/db (assoc state :buddy/facing should-face)
-           :uf/fxs (facing-fxs (:dom/el state) should-face)})))))
+           :uf/fxs (orientation-fxs (:dom/el state) should-face)})))))
 
 (defn enter-state-action
   "Pure state transition. Returns {:uf/db :uf/fxs}."
@@ -542,7 +554,7 @@
                        :buddy/state-end (+ now duration)
                        :buddy/facing new-facing)
          :uf/fxs (into (anim-fxs el :anim/walk)
-                       (facing-fxs el new-facing))})
+                       (orientation-fxs el new-facing))})
 
       :bs/running
       (let [energy (or (:buddy/energy state) 0.8)
@@ -554,7 +566,7 @@
                        :buddy/state-end (+ now duration)
                        :buddy/facing new-facing)
          :uf/fxs (into (anim-fxs el :anim/run)
-                       (facing-fxs el new-facing))})
+                       (orientation-fxs el new-facing))})
 
       :bs/jumping
       (let [vx (if (= (:buddy/facing state) :facing/right)
@@ -635,12 +647,12 @@
             (cond
               (< new-offset min-off)
               {:uf/db (assoc state :surface/offset-x min-off :buddy/facing :facing/right)
-               :uf/fxs (facing-fxs el :facing/right)
+               :uf/fxs (orientation-fxs el :facing/right)
                :uf/dxs [[:buddy/ax.enter-state :bs/edge-contemplating]]}
 
               (> new-offset max-off)
               {:uf/db (assoc state :surface/offset-x max-off :buddy/facing :facing/left)
-               :uf/fxs (facing-fxs el :facing/left)
+               :uf/fxs (orientation-fxs el :facing/left)
                :uf/dxs [[:buddy/ax.enter-state :bs/edge-contemplating]]}
 
               :else
@@ -651,13 +663,13 @@
               (< new-x 0)
               {:uf/db (assoc state :pos/x 0 :buddy/facing :facing/right)
                :uf/fxs (into (position-fxs container 0 y)
-                             (facing-fxs el :facing/right))
+                             (orientation-fxs el :facing/right))
                :uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
 
               (> new-x max-bound)
               {:uf/db (assoc state :pos/x max-bound :buddy/facing :facing/left)
                :uf/fxs (into (position-fxs container max-bound y)
-                             (facing-fxs el :facing/left))
+                             (orientation-fxs el :facing/left))
                :uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
 
               :else
@@ -772,7 +784,7 @@
                 max-x (- js/window.innerWidth cat-w)
                 clamped-x (max 0 (min new-x max-x))
                 facing-update (when (not= walk-facing facing)
-                                (facing-fxs el walk-facing))]
+                                (orientation-fxs el walk-facing))]
             {:uf/db (assoc state :pos/x clamped-x :buddy/facing walk-facing)
              :uf/fxs (into (position-fxs container clamped-x y)
                            (or facing-update []))})))
@@ -793,7 +805,7 @@
              :uf/dxs [[:buddy/ax.enter-state :bs/jumping]]})
           (let [new-facing (if (= facing :facing/left) :facing/right :facing/left)]
             {:uf/db (assoc state :buddy/facing new-facing)
-             :uf/fxs (facing-fxs el new-facing)
+             :uf/fxs (orientation-fxs el new-facing)
              :uf/dxs [[:buddy/ax.enter-state :bs/walking]]}))))))
 
 (defn tick-dragging
@@ -821,7 +833,7 @@
           {:uf/db (assoc state :pos/x new-x :pos/y new-y :buddy/facing new-facing)
            :uf/fxs (into (position-fxs container new-x new-y)
                          (when (not= new-facing (:buddy/facing state))
-                           (facing-fxs (:dom/el state) new-facing)))})))))
+                           (orientation-fxs (:dom/el state) new-facing)))})))))
 
 (defn tick-cursor-chasing
   "Tick handler for cursor chasing — walk toward mouse, stop if mouse moves or reached."
@@ -856,7 +868,7 @@
                            :buddy/last-mouse-x mouse-x :buddy/last-mouse-y mouse-y)
              :uf/fxs (into (position-fxs container clamped-x y)
                            (when facing-changed?
-                             (facing-fxs el walk-facing)))}))))))
+                             (orientation-fxs el walk-facing)))}))))))
 
 (defn init-action
   "Initialize buddy from DOM refs."
@@ -900,14 +912,14 @@
         (and (< dist 200) (< (rand) 0.3))
         (let [run-facing (if (pos? dx) :facing/left :facing/right)]
           {:uf/db (assoc state :buddy/facing run-facing)
-           :uf/fxs (facing-fxs el run-facing)
+           :uf/fxs (orientation-fxs el run-facing)
            :uf/dxs [[:buddy/ax.enter-state :bs/being-hit]]})
 
         (< dist 500)
         (let [face-dir (if (pos? dx) :facing/right :facing/left)]
           (when (not= face-dir (:buddy/facing state))
             {:uf/db (assoc state :buddy/facing face-dir)
-             :uf/fxs (facing-fxs el face-dir)}))))))
+             :uf/fxs (orientation-fxs el face-dir)}))))))
 
 (defn stop-action
   "Teardown — cancel RAF, remove handlers and DOM, reset env."
