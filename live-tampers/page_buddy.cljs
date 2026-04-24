@@ -35,7 +35,8 @@
    :being-hit -0.005
    :stunned   0.0
    :landing   0.0
-   :perching -0.002})
+   :perching -0.002
+   :edge-contemplating 0.001})
 
 (defn rand-between [lo hi]
   (+ lo (rand-int (- hi lo))))
@@ -488,6 +489,11 @@
       {:uf/db base-db
        :uf/fxs (anim-fxs el :walk)}
 
+      :edge-contemplating
+      (let [duration (rand-between 800 1500)]
+        {:uf/db (assoc base-db :state-end (+ now duration))
+         :uf/fxs (anim-fxs el :idle)})
+
       nil)))
 
 (defn tick-walking
@@ -503,18 +509,19 @@
           (let [rect (.getBoundingClientRect (:el current-surface))]
             [(.-left rect) (- (.-right rect) cat-w)])
           [0 (- js/window.innerWidth cat-w)])
+        edge-state (if current-surface :edge-contemplating :idle)
         move-result (cond
                       (< new-x min-bound)
                       {:uf/db (assoc state :x min-bound :facing :right)
                        :uf/fxs (into (position-fxs container min-bound y)
                                      (facing-fxs el :right))
-                       :uf/dxs [[:buddy/ax.enter-state :idle]]}
+                       :uf/dxs [[:buddy/ax.enter-state edge-state]]}
 
                       (> new-x max-bound)
                       {:uf/db (assoc state :x max-bound :facing :left)
                        :uf/fxs (into (position-fxs container max-bound y)
                                      (facing-fxs el :left))
-                       :uf/dxs [[:buddy/ax.enter-state :idle]]}
+                       :uf/dxs [[:buddy/ax.enter-state edge-state]]}
 
                       :else
                       {:uf/db (assoc state :x new-x)
@@ -612,6 +619,7 @@
                        :meowing :meow
                        :touching :touch
                        :perching :walk
+                       :edge-contemplating :idle
                        nil)]
         (when result
           (let [frames (get-in sprites/animations [anim-key :frames] 0)]
@@ -715,6 +723,22 @@
                                          (or facing-update []))})))
                     {:uf/dxs [[:buddy/ax.enter-state :idle]]}))
 
+                :edge-contemplating
+                (when (and state-end (> now state-end))
+                  (let [{:keys [x y facing el container current-surface]} state
+                        cat-w (* (:w sprites/frame-size) (:scale config))
+                        jump-off? (< (rand) 0.4)]
+                    (if jump-off?
+                      ;; Jump off the edge — small outward velocity
+                      (let [vx (if (= facing :left) -2 2)]
+                        {:uf/db (assoc state :vx vx :vy -2 :current-surface nil)
+                         :uf/dxs [[:buddy/ax.enter-state :jumping]]})
+                      ;; Turn around and walk back
+                      (let [new-facing (if (= facing :left) :right :left)]
+                        {:uf/db (assoc state :facing new-facing)
+                         :uf/fxs (facing-fxs el new-facing)
+                         :uf/dxs [[:buddy/ax.enter-state :walking]]}))))
+
                 nil))]
         ;; Always persist energy update, merge with behavior result
         (if behavior-result
@@ -731,7 +755,7 @@
             dx (- click-x cat-center-x)
             dy (- click-y (+ y (/ (* (:h sprites/frame-size) (:scale config)) 2)))
             dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))
-            ground-state? (contains? #{:idle :walking :running :sitting :meowing :touching :perching} buddy-state)]
+            ground-state? (contains? #{:idle :walking :running :sitting :meowing :touching :perching :edge-contemplating} buddy-state)]
         (when ground-state?
           (cond
             (and (< dist 200) (< (rand) 0.3))
