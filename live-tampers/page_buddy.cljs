@@ -348,9 +348,7 @@
                       (let [curr-y (.-scrollY js/window)
                             dy (js/Math.abs (- curr-y @!prev-y))]
                         (reset! !prev-y curr-y)
-                        (dispatch-fn
-                         (cond-> [[:buddy/ax.env-merge :scroll/y curr-y]]
-                           (> dy 500) (conj [:buddy/ax.enter-state :bs/being-hit])))
+                        (dispatch-fn [[:buddy/ax.on-scroll curr-y dy]])
                         (when-let [t @!scan-timeout]
                           (js/clearTimeout t))
                         (reset! !scan-timeout
@@ -980,6 +978,13 @@
                     (position-fxs (:dom/container result-state) vx vy))
             result)
           result))
+
+      :buddy/ax.on-scroll
+      (let [[scroll-y abs-dy] args]
+        (cond-> {:uf/env {:scroll/y scroll-y}}
+          (and (> abs-dy 500)
+               (not (and (:buddy/current-surface state) (:surface/offset-x state))))
+          (assoc :uf/dxs [[:buddy/ax.enter-state :bs/being-hit]])))
 
       :buddy/ax.scan-surfaces
       {:uf/fxs [[:dom/fx.scan-surfaces]]}
