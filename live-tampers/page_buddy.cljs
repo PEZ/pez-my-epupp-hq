@@ -564,7 +564,7 @@
                   :bs/jumping  (* 0.10 active-bias)
                   :bs/running  (* 0.20 active-bias)
                   :bs/perching (* 0.15 active-bias)
-                  :bs/climbing (* 0.12 active-bias)
+                  :bs/climbing (* 0.05 active-bias)
                   :bs/walking  (* 0.25 active-bias)}
          filtered (if valid-set
                     (select-keys weights (filterv valid-set (keys weights)))
@@ -637,12 +637,14 @@
                  (* -0.5 (:cfg/walk-speed config)))
             vy (:cfg/jump-vy config)]
         {:uf/db (assoc base-db :vel/x vx :vel/y vy)
-         :uf/fxs (anim-fxs el :anim/jump)})
+         :uf/fxs (into (anim-fxs el :anim/jump)
+                       (orientation-fxs el (:buddy/facing state)))})
 
       :bs/falling
       {:uf/db (assoc base-db :vel/x 0 :vel/y 0
                      :buddy/climb-direction nil :buddy/climb-goal nil)
-       :uf/fxs (anim-fxs el :anim/jump)}
+       :uf/fxs (into (anim-fxs el :anim/jump)
+                     (orientation-fxs el (:buddy/facing state)))}
 
       :bs/landing
       {:uf/db (assoc base-db :buddy/state-end (+ now 500))
@@ -652,7 +654,8 @@
       {:uf/db (assoc base-db :buddy/state-end (+ now 400)
                      :buddy/current-surface nil :surface/offset-x nil
                      :buddy/climb-direction nil :buddy/climb-goal nil)
-       :uf/fxs (anim-fxs el :anim/being-hit)}
+       :uf/fxs (into (anim-fxs el :anim/being-hit)
+                     (orientation-fxs el (:buddy/facing state)))}
 
       :bs/stunned
       {:uf/db (assoc base-db :buddy/state-end (+ now 800))
@@ -708,7 +711,7 @@
       (let [climb-dir (or (:buddy/climb-direction state) :climb/up)
             surface-type (derive-surface-type state)]
         {:uf/db (assoc base-db :buddy/climb-direction climb-dir)
-         :uf/fxs (into (anim-fxs el :anim/climb)
+         :uf/fxs (into (anim-fxs el :anim/run)
                        (orientation-fxs el (:buddy/facing state) surface-type))})
 
       (do (js/console.warn "Unknown state:" (pr-str new-bstate))
@@ -909,7 +912,7 @@
   [state _uf-data]
   (let [{:buddy/keys [climb-direction current-surface climb-goal]
          :surface/keys [offset-x]} state
-        climb-speed (* (:cfg/walk-speed config) (:cfg/climb-speed-ratio config))
+        climb-speed (* (:cfg/run-speed config) (:cfg/climb-speed-ratio config))
         dy (if (= climb-direction :climb/up) (- climb-speed) climb-speed)
         surf-el (:dom/el current-surface)
         rect (.getBoundingClientRect surf-el)
@@ -1219,7 +1222,7 @@
                        :bs/edge-contemplating :anim/idle
                        :bs/dragging :anim/being-hit
                        :bs/cursor-chasing :anim/walk
-                       :bs/climbing :anim/climb
+                       :bs/climbing :anim/run
                        :bs/climb-idle :anim/climb-idle
                        :bs/wall-sliding :anim/climb
                        :bs/corner-transition :anim/idle
@@ -1462,4 +1465,5 @@
   @!state
   @!env
   (select-keys @!env [:mouse/x :mouse/y])
+
   :rcf/ok)
