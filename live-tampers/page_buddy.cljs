@@ -37,7 +37,8 @@
    :landing   0.0
    :perching -0.002
    :edge-contemplating 0.001
-   :dragging 0.0})
+   :dragging 0.0
+   :cursor-chasing -0.002})
 
 (defonce !state (atom nil))
 
@@ -547,6 +548,10 @@
       {:uf/db (assoc base-db :current-surface nil)
        :uf/fxs (anim-fxs el :being-hit)}
 
+      :cursor-chasing
+      {:uf/db base-db
+       :uf/fxs (anim-fxs el :walk)}
+
       nil)))
 
 (defn tick-walking
@@ -675,6 +680,7 @@
                        :perching :walk
                        :edge-contemplating :idle
                        :dragging :being-hit
+                       :cursor-chasing :walk
                        nil)]
         (when result
           (let [frames (get-in sprites/animations [anim-key :frames] 0)]
@@ -705,9 +711,35 @@
                :uf/dxs [[:buddy/ax.enter-state :falling]]}
               (case buddy-state
                 :idle
-                (if (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state (pick-next-behavior (or (:energy state) 0.8) (:roll uf-data))]]}
-                  (mouse-facing-fxs state uf-data))
+                (let [mouse-x (:mouse/x uf-data)
+                      mouse-y (:mouse/y uf-data)
+                      last-mx (:last-mouse-x state)
+                      last-my (:last-mouse-y state)
+                      mouse-moved? (or (nil? last-mx)
+                                       (> (js/Math.abs (- (or mouse-x 0) last-mx)) 5)
+                                       (> (js/Math.abs (- (or mouse-y 0) last-my)) 5))
+                      still-since (if mouse-moved? now (or (:mouse-still-since state) now))
+                      mouse-still-time (- now still-since)
+                      state (assoc state
+                                   :last-mouse-x mouse-x
+                                   :last-mouse-y mouse-y
+                                   :mouse-still-since still-since)]
+                  (if (and state-end (> now state-end))
+                    {:uf/db state
+                     :uf/dxs [[:buddy/ax.enter-state (pick-next-behavior (or (:energy state) 0.8) (:roll uf-data))]]}
+                    ;; Check for cursor chase: mouse near, still >2s, 20% chance per check
+                    (if (and mouse-x mouse-y (> mouse-still-time 2000))
+                      (let [cat-center-x (+ (:x state) (/ (* (:w sprites/frame-size) (:scale config)) 2))
+                            dx (- mouse-x cat-center-x)
+                            dy (- mouse-y (:y state))
+                            dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))]
+                        (if (and (< dist 500) (> dist 180) (< (rand) 0.005))
+                          {:uf/db state
+                           :uf/dxs [[:buddy/ax.enter-state :cursor-chasing]]}
+                          (or (mouse-facing-fxs state uf-data)
+                              {:uf/db state})))
+                      (or (mouse-facing-fxs state uf-data)
+                          {:uf/db state}))))
 
                 :walking
                 (tick-walking state now)
@@ -813,6 +845,49 @@
                          :uf/fxs (into (position-fxs container new-x new-y)
                                        (when (not= new-facing (:facing state))
                                          (facing-fxs (:el state) new-facing)))}))))
+
+                :cursor-chasing
+                (let [mouse-x (:mouse/x uf-data)
+                      mouse-y (:mouse/y uf-data)
+                      {:keys [x y facing el container]} state
+                      cat-w (* (:w sprites/frame-size) (:scale config))
+                      cat-center-x (+ x (/ cat-w 2))]
+                  (if (nil? mouse-x)
+                    ;; Lost mouse info, go idle
+                    {:uf/dxs [[:buddy/ax.enter-state :idle]]}
+                    (let [dx (- mouse-x cat-center-x)
+                          dy (- mouse-y y)
+                          dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))
+                          last-mx (:last-mouse-x state)
+                          last-my (:last-mouse-y state)
+                          mouse-moved? (and last-mx
+                                            (or (> (js/Math.abs (- mouse-x last-mx)) 30)
+                                                (> (js/Math.abs (- mouse-y last-my)) 30)))]
+                      (cond
+                        ;; Mouse moved significantly — cat stops chasing
+                        mouse-moved?
+                        {:uf/db (assoc state :last-mouse-x mouse-x :last-mouse-y mouse-y)
+                         :uf/dxs [[:buddy/ax.enter-state :idle]]}
+
+                        ;; Reached orbit distance — stop and look
+                        (<= dist 180)
+                        {:uf/db (assoc state :last-mouse-x mouse-x :last-mouse-y mouse-y)
+                         :uf/dxs [[:buddy/ax.enter-state :idle]]}
+
+                        ;; Walk toward mouse
+                        :else
+                        (let [walk-facing (if (pos? dx) :right :left)
+                              speed (:walk-speed config)
+                              step (if (= walk-facing :right) speed (- speed))
+                              new-x (+ x step)
+                              max-x (- js/window.innerWidth cat-w)
+                              clamped-x (max 0 (min new-x max-x))
+                              facing-changed? (not= walk-facing facing)]
+                          {:uf/db (assoc state :x clamped-x :facing walk-facing
+                                         :last-mouse-x mouse-x :last-mouse-y mouse-y)
+                           :uf/fxs (into (position-fxs container clamped-x y)
+                                         (when facing-changed?
+                                           (facing-fxs el walk-facing)))})))))
 
                 nil))]
         ;; Always persist energy update, merge with behavior result
