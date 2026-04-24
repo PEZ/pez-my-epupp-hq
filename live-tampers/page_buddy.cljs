@@ -528,28 +528,46 @@
   [container x y]
   [[:dom/fx.set-transform container x y]])
 
+(def surface-valid-states
+  "States valid on each surface type. nil = all states valid (floor)."
+  {:surface/left-wall  #{:bs/climbing :bs/climb-idle :bs/wall-sliding
+                         :bs/corner-transition :bs/falling :bs/jumping
+                         :bs/dragging :bs/being-hit}
+   :surface/right-wall #{:bs/climbing :bs/climb-idle :bs/wall-sliding
+                         :bs/corner-transition :bs/falling :bs/jumping
+                         :bs/dragging :bs/being-hit}
+   :surface/ceiling    #{:bs/ceiling-walking :bs/ceiling-idle
+                         :bs/corner-transition :bs/falling :bs/jumping
+                         :bs/dragging :bs/being-hit}})
+
 (defn pick-next-behavior
-  "Energy-weighted behavior selection from a random roll."
-  [energy roll]
-  (let [rest-bias (- 1.0 energy)
-        active-bias energy
-        weights {:bs/sitting  (* 0.25 rest-bias)
-                 :bs/sleeping (if (< energy 0.2) (* 0.3 rest-bias) 0.0)
-                 :bs/meowing  0.12
-                 :bs/touching 0.08
-                 :bs/jumping  (* 0.10 active-bias)
-                 :bs/running  (* 0.20 active-bias)
-                 :bs/perching (* 0.15 active-bias)
-                 :bs/walking  (* 0.30 active-bias)}
-        total (reduce + (vals weights))
-        normalized (reduce-kv (fn [m k v] (assoc m k (/ v total))) {} weights)
-        ordered [:bs/sitting :bs/sleeping :bs/meowing :bs/touching :bs/jumping :bs/running :bs/perching :bs/walking]
-        cumulative (reductions + (map #(get normalized %) ordered))]
-    (or (first (keep-indexed
-                (fn [i cum]
-                  (when (< roll cum) (nth ordered i)))
-                cumulative))
-        :bs/walking)))
+  "Energy-weighted behavior selection from a random roll.
+   Optional valid-set filters the pool to surface-compatible states."
+  ([energy roll] (pick-next-behavior energy roll nil))
+  ([energy roll valid-set]
+   (let [rest-bias (- 1.0 energy)
+         active-bias energy
+         weights {:bs/sitting  (* 0.25 rest-bias)
+                  :bs/sleeping (if (< energy 0.2) (* 0.3 rest-bias) 0.0)
+                  :bs/meowing  0.12
+                  :bs/touching 0.08
+                  :bs/jumping  (* 0.10 active-bias)
+                  :bs/running  (* 0.20 active-bias)
+                  :bs/perching (* 0.15 active-bias)
+                  :bs/walking  (* 0.30 active-bias)}
+         filtered (if valid-set
+                    (select-keys weights (filterv valid-set (keys weights)))
+                    weights)
+         filtered (if (empty? filtered) {:bs/falling 1.0} filtered)
+         total (reduce + (vals filtered))
+         normalized (reduce-kv (fn [m k v] (assoc m k (/ v total))) {} filtered)
+         ordered (keys filtered)
+         cumulative (reductions + (map #(get normalized %) ordered))]
+     (or (first (keep-indexed
+                 (fn [i cum]
+                   (when (< roll cum) (nth ordered i)))
+                 cumulative))
+         (first ordered)))))
 
 ;; -- Actions (pure: state + uf-data + action → result) --
 
@@ -994,8 +1012,13 @@
 
       :buddy/ax.enter-state
       (let [[new-bstate] args
-            result (enter-state-action state uf-data new-bstate)
-            anim-key (case new-bstate
+            surface-type (derive-surface-type state)
+            valid-set (get surface-valid-states surface-type)
+            effective-bstate (if (or (nil? valid-set) (valid-set new-bstate))
+                               new-bstate
+                               :bs/falling)
+            result (enter-state-action state uf-data effective-bstate)
+            anim-key (case effective-bstate
                        :bs/idle :anim/idle
                        :bs/walking :anim/walk
                        :bs/running :anim/run
@@ -1012,6 +1035,12 @@
                        :bs/edge-contemplating :anim/idle
                        :bs/dragging :anim/being-hit
                        :bs/cursor-chasing :anim/walk
+                       :bs/climbing :anim/climb
+                       :bs/climb-idle :anim/climb-idle
+                       :bs/wall-sliding :anim/climb
+                       :bs/corner-transition :anim/idle
+                       :bs/ceiling-walking :anim/walk
+                       :bs/ceiling-idle :anim/climb-idle
                        nil)]
         (when result
           (let [frames (get-in page-buddy-sprites/animations [anim-key :anim/frames] 0)]
