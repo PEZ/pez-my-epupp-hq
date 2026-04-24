@@ -1202,8 +1202,7 @@
 
 (def timeout-transitions
   "States that auto-transition when their timer expires. Maps current → next."
-  {:bs/landing   :bs/idle
-   :bs/being-hit :bs/stunned
+  {:bs/being-hit :bs/stunned
    :bs/sleeping  :bs/idle
    :bs/meowing   :bs/idle
    :bs/touching  :bs/idle})
@@ -1338,11 +1337,16 @@
                   :bs/edge-contemplating (tick-edge-contemplating state uf-data)
                   :bs/dragging (tick-dragging state uf-data)
                   :bs/cursor-chasing (tick-cursor-chasing state uf-data)
+                  :bs/landing
+                  (when (and state-end (> now state-end))
+                    (let [next (if (< (rand) 0.4) :bs/touching :bs/idle)]
+                      {:uf/dxs [[:buddy/ax.enter-state next]]}))
                   :bs/stunned
                   (when (and state-end (> now state-end))
                     (if (or (:buddy/current-surface state)
                             (>= (:pos/y state) (floor-y)))
-                      {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
+                      (let [next (if (< (rand) 0.7) :bs/touching :bs/idle)]
+                        {:uf/dxs [[:buddy/ax.enter-state next]]})
                       {:uf/dxs [[:buddy/ax.enter-state :bs/falling]]}))
                   nil)))
             result (if behavior-result
