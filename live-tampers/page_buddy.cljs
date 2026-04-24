@@ -99,15 +99,18 @@
     @results))
 
 (defn find-landing-surface
-  "Check if cat crossed through a surface top edge during fall."
+  "Check if cat's feet crossed through a surface top edge during fall."
   [surfaces cat-x cat-y cat-prev-y]
   (let [cat-w (* (:w sprites/frame-size) (:scale config))
-        cat-right (+ cat-x cat-w)]
+        cat-h (* (:h sprites/frame-size) (:scale config))
+        cat-right (+ cat-x cat-w)
+        cat-bottom (+ cat-y cat-h)
+        cat-prev-bottom (+ cat-prev-y cat-h)]
     (when (> cat-y cat-prev-y)
       (first
        (filter (fn [{:keys [top left right width]}]
-                 (and (<= cat-prev-y top)
-                      (>= cat-y top)
+                 (and (<= cat-prev-bottom top)
+                      (>= cat-bottom top)
                       (< cat-x right)
                       (> cat-right left)
                       (> width cat-w)))
@@ -141,14 +144,17 @@
   [cat-x cat-y surface]
   (let [{:keys [top left right]} surface
         cat-w (* (:w sprites/frame-size) (:scale config))
+        cat-h (* (:h sprites/frame-size) (:scale config))
         target-x (max (+ left 10) (min (- right cat-w 10) cat-x))
         dx (- target-x cat-x)
+        target-y (- top cat-h)
+        dy (- cat-y target-y)
         gravity (:gravity config)
-        total-height (+ (- cat-y top) 15)
+        total-height (+ dy 15)
         vy (- (js/Math.sqrt (* 2 gravity total-height)))
         a (* 0.5 gravity)
         b vy
-        c (- cat-y top)
+        c dy
         discriminant (- (* b b) (* 4 a c))
         t (when (>= discriminant 0)
             (/ (- (- b) (js/Math.sqrt discriminant)) (* 2 a)))
