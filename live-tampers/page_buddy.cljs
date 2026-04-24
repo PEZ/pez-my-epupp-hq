@@ -69,10 +69,11 @@
     (max 0.0 (min 1.0 (+ energy rate)))))
 
 (defn scan-surfaces-data
-  "Scan DOM for viable perching surfaces. Returns vector of surface maps."
+  "Scan DOM for viable surfaces. Returns vector of surface maps with :surface/faces set."
   []
   (let [vw js/window.innerWidth
-        vh js/window.innerHeight]
+        vh js/window.innerHeight
+        min-wall-height 200]
     (->> (js/document.querySelectorAll
           "nav, header, aside, section, article, div, img, table, footer, main")
          (keep (fn [el]
@@ -92,14 +93,18 @@
                                 (< left vw)
                                 (> right 0)
                                 (> top 50))
-                       {:dom/el el
-                        :geom/top top
-                        :geom/left left
-                        :geom/right right
-                        :geom/bottom bottom
-                        :geom/width w
-                        :geom/height h})))))
+                       (let [faces (cond-> #{:surface/floor}
+                                     (> h min-wall-height) (conj :surface/left-wall :surface/right-wall))]
+                         {:dom/el el
+                          :geom/top top
+                          :geom/left left
+                          :geom/right right
+                          :geom/bottom bottom
+                          :geom/width w
+                          :geom/height h
+                          :surface/faces faces}))))))
          vec)))
+
 
 (defn find-landing-surface
   "Check if cat's feet crossed through a surface top edge during fall."
@@ -164,6 +169,34 @@
                           horiz-dist (js/Math.abs (- surface-center-x cat-center-x))
                           height-diff (- cat-y top)]
                       (+ horiz-dist (* height-diff 0.5)))))
+         first)))
+
+(defn find-wall-surface
+  "Find nearest wall surface within reach of cat. Returns {:surface/map ... :surface/side ...} or nil."
+  [surfaces cat-x cat-y max-dist]
+  (let [cat-center-x (+ cat-x (/ cat-w 2))
+        cat-center-y (+ cat-y (/ cat-h 2))]
+    (->> surfaces
+         (keep (fn [{:surface/keys [faces] :geom/keys [left right top bottom] :as surface}]
+                 (when faces
+                   (let [results
+                         (cond-> []
+                           (and (contains? faces :surface/left-wall)
+                                (< (js/Math.abs (- left cat-center-x)) max-dist)
+                                (> cat-center-y top)
+                                (< cat-center-y bottom))
+                           (conj {:surface/map surface :surface/side :surface/left-wall
+                                  :surface/dist (js/Math.abs (- left cat-center-x))})
+
+                           (and (contains? faces :surface/right-wall)
+                                (< (js/Math.abs (- right cat-center-x)) max-dist)
+                                (> cat-center-y top)
+                                (< cat-center-y bottom))
+                           (conj {:surface/map surface :surface/side :surface/right-wall
+                                  :surface/dist (js/Math.abs (- right cat-center-x))}))]
+                     (seq results)))))
+         (apply concat)
+         (sort-by :surface/dist)
          first)))
 
 (defn compute-jump-to-surface
