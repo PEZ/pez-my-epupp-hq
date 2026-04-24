@@ -36,7 +36,16 @@
    :stunned   0.0
    :landing   0.0
    :perching -0.002
-   :edge-contemplating 0.001})
+   :edge-contemplating 0.001
+   :dragging 0.0})
+
+(defonce !state (atom nil))
+
+(defonce !env (atom {:mouse-x nil :mouse-y nil :scroll-y 0}))
+
+;; -- Forward declaration for dispatch (only legitimate use) --
+
+(declare dispatch!)
 
 (defn rand-between [lo hi]
   (+ lo (rand-int (- hi lo))))
@@ -162,6 +171,9 @@
             :scrolled-away
             :valid))))))
 
+(defn floor-y []
+  (- js/window.innerHeight 40 (* (:h sprites/frame-size) (:scale config))))
+
 (defn current-ground-y
   "Returns y-coordinate of current ground plane, considering surfaces."
   [state]
@@ -170,17 +182,6 @@
           cat-h (* (:h sprites/frame-size) (:scale config))]
       (- (.-top rect) cat-h))
     (floor-y)))
-
-(defn floor-y []
-  (- js/window.innerHeight 40 (* (:h sprites/frame-size) (:scale config))))
-
-(defonce !state (atom nil))
-
-(defonce !env (atom {:mouse-x nil :mouse-y nil :scroll-y 0}))
-
-;; -- Forward declaration for dispatch (only legitimate use) --
-
-(declare dispatch!)
 
 ;; -- Effects (imperative shell — no @!state reads) --
 
@@ -245,6 +246,53 @@
                              (fn [e]
                                (.stopPropagation e)
                                (dispatch! [[:buddy/ax.enter-state :being-hit]]))))
+        nil)
+
+      :dom/fx.add-drag-handler
+      (let [[container-node] args
+            !drag-state (atom {:last-x nil :last-y nil :last-t nil})
+            move-handler (atom nil)
+            up-handler (atom nil)
+            down-handler
+            (fn [e]
+              (.preventDefault e)
+              (.stopPropagation e)
+              (let [x (.-clientX e)
+                    y (.-clientY e)
+                    now (js/Date.now)]
+                (reset! !drag-state {:last-x x :last-y y :last-t now})
+                (swap! !env assoc :drag {:active? true :x x :y y :vx 0 :vy 0})
+                (dispatch! [[:buddy/ax.enter-state :dragging]])
+                (reset! move-handler
+                        (fn [me]
+                          (let [mx (.-clientX me)
+                                my (.-clientY me)
+                                mt (js/Date.now)
+                                {:keys [last-x last-y last-t]} @!drag-state
+                                dt (max 1 (- mt (or last-t mt)))
+                                vx (/ (- mx (or last-x mx)) dt)
+                                vy (/ (- my (or last-y my)) dt)]
+                            (reset! !drag-state {:last-x mx :last-y my :last-t mt})
+                            (swap! !env assoc :drag {:active? true :x mx :y my
+                                                     :vx (* vx 8) :vy (* vy 8)}))))
+                (reset! up-handler
+                        (fn [_ue]
+                          (let [{:keys [vx vy]} (:drag @!env)]
+                            (swap! !env assoc :drag {:active? false :x nil :y nil :vx 0 :vy 0})
+                            (.removeEventListener js/document "mousemove" @move-handler)
+                            (.removeEventListener js/document "mouseup" @up-handler)
+                            (dispatch! [[:buddy/ax.drag-release vx vy]]))))
+                (.addEventListener js/document "mousemove" @move-handler)
+                (.addEventListener js/document "mouseup" @up-handler)))]
+        (when container-node
+          (.addEventListener container-node "mousedown" down-handler)
+          (swap! !env assoc :drag-handler down-handler))
+        nil)
+
+      :dom/fx.remove-drag-handler
+      (let [[container-node handler] args]
+        (when (and container-node handler)
+          (.removeEventListener container-node "mousedown" handler))
         nil)
 
       :dom/fx.add-mouse-tracker
@@ -315,7 +363,8 @@
       (do (apply js/console.log args) nil)
 
       :env/fx.reset
-      (do (reset! !env {:mouse-x nil :mouse-y nil :scroll-y 0}) nil)
+      (do (reset! !env {:mouse-x nil :mouse-y nil :scroll-y 0
+                        :drag {:active? false :x nil :y nil :vx 0 :vy 0}}) nil)
 
       :dom/fx.scan-surfaces
       (do (swap! !env assoc :surfaces (scan-surfaces-data))
@@ -494,6 +543,10 @@
         {:uf/db (assoc base-db :state-end (+ now duration))
          :uf/fxs (anim-fxs el :idle)})
 
+      :dragging
+      {:uf/db (assoc base-db :current-surface nil)
+       :uf/fxs (anim-fxs el :being-hit)}
+
       nil)))
 
 (defn tick-walking
@@ -596,6 +649,7 @@
          :uf/fxs [[:dom/fx.inject-css (make-sprite-css)]
                   [:dom/fx.set-transform (:container dom-refs) init-x init-y]
                   [:dom/fx.add-click-handler (:el dom-refs)]
+                  [:dom/fx.add-drag-handler (:container dom-refs)]
                   [:dom/fx.add-mouse-tracker]
                   [:dom/fx.add-click-tracker]
                   [:dom/fx.add-scroll-tracker]
@@ -620,6 +674,7 @@
                        :touching :touch
                        :perching :walk
                        :edge-contemplating :idle
+                       :dragging :being-hit
                        nil)]
         (when result
           (let [frames (get-in sprites/animations [anim-key :frames] 0)]
@@ -725,8 +780,7 @@
 
                 :edge-contemplating
                 (when (and state-end (> now state-end))
-                  (let [{:keys [x y facing el container current-surface]} state
-                        cat-w (* (:w sprites/frame-size) (:scale config))
+                  (let [{:keys [facing el]} state
                         jump-off? (< (rand) 0.4)]
                     (if jump-off?
                       ;; Jump off the edge — small outward velocity
@@ -739,6 +793,27 @@
                          :uf/fxs (facing-fxs el new-facing)
                          :uf/dxs [[:buddy/ax.enter-state :walking]]}))))
 
+                :dragging
+                (let [drag (:drag/data uf-data)
+                      {:keys [container]} state
+                      cat-h (* (:h sprites/frame-size) (:scale config))]
+                  (when (:active? drag)
+                    (let [dx (- (:x drag) (:x state))
+                          new-x (:x drag)
+                          new-y (- (:y drag) (/ cat-h 2))
+                          new-facing (cond (> dx 2) :right (< dx -2) :left :else (:facing state))
+                          held-time (- now (or (:state-timer state) now))
+                          break-free? (and (> held-time 2000) (< (rand) 0.05))]
+                      (if break-free?
+                        ;; Cat squirms free!
+                        (let [vx (if (= new-facing :left) 4 -4)]
+                          {:uf/db (assoc state :vx vx :vy -6 :x new-x :y new-y :current-surface nil)
+                           :uf/dxs [[:buddy/ax.enter-state :jumping]]})
+                        {:uf/db (assoc state :x new-x :y new-y :facing new-facing)
+                         :uf/fxs (into (position-fxs container new-x new-y)
+                                       (when (not= new-facing (:facing state))
+                                         (facing-fxs (:el state) new-facing)))}))))
+
                 nil))]
         ;; Always persist energy update, merge with behavior result
         (if behavior-result
@@ -747,6 +822,13 @@
 
       :buddy/ax.scan-surfaces
       {:uf/fxs [[:dom/fx.scan-surfaces]]}
+
+      :buddy/ax.drag-release
+      (let [[vx vy] args
+            clamped-vx (max -15 (min 15 (or vx 0)))
+            clamped-vy (max -15 (min 15 (or vy 0)))]
+        {:uf/db (assoc state :vx clamped-vx :vy clamped-vy :current-surface nil)
+         :uf/dxs [[:buddy/ax.enter-state :jumping]]})
 
       :buddy/ax.react-to-click
       (let [[click-x click-y] args
@@ -774,6 +856,7 @@
       (let [{:keys [raf-id container]} state]
         {:uf/db nil
          :uf/fxs [[:dom/fx.cancel-raf raf-id]
+                  [:dom/fx.remove-drag-handler container (:env/drag-handler uf-data)]
                   [:dom/fx.remove-mouse-tracker (:env/mouse-handler uf-data)]
                   [:dom/fx.remove-click-tracker (:env/click-handler uf-data)]
                   [:dom/fx.remove-scroll-tracker (:env/scroll-handler uf-data)]
@@ -802,6 +885,8 @@
                                            :mouse/y (:mouse-y env)
                                            :scroll/y (:scroll-y env)
                                            :surfaces/visible (:surfaces env)
+                                           :drag/data (:drag env)
+                                           :env/drag-handler (:drag-handler env)
                                            :env/mouse-handler (:mouse-handler env)
                                            :env/click-handler (:click-handler env)
                                            :env/scroll-handler (:scroll-handler env)}
