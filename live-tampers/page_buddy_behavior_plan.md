@@ -191,7 +191,7 @@ At 10Hz tick rate, a fast scroll produces visible lag — the element moves at 6
 
 Each step is independently testable and leaves the system shippable:
 
-1. **Infrastructure**: Add `cat-w`/`cat-h` constants, helpers (`derive-viewport-pos`, `offset-from-viewport`, `surface-walk-bounds`, `on-surface?`), add `:surface/offset-x nil` to `init-action`. No behavior changes.
+1. **Infrastructure**: Add `cat-w`/`cat-h` constants, helpers (`derive-viewport-pos`, `offset-from-viewport`, `surface-walk-bounds`, `on-surface?`), add `:surface/offset-x nil` to `init-action`. Add horizontal air resistance (`vx *= 0.95` in `tick-jumping`). Add `:default` branch to `enter-state-action` (→ `:bs/falling` with warning). Switch `scan-surfaces-data` exclusion from ID-based to class-based (`.page-buddy-element`). No behavior changes.
 
 2. **Atomic offset system**: Landing stores offset, `tick-walking` uses offset (surface branch), pre-tick refresh derives viewport pos, post-tick emits position-fxs. Slim surface map to `{:dom/el el}`. This is one atomic step — offset-store, offset-walk, and viewport-refresh are a semantic unit that can't be shipped separately.
 
@@ -447,6 +447,20 @@ Cat walks to element edge → can't climb (element too short) → idle facing wa
 **Trigger**: Walks into element side that's too short to climb
 **Infrastructure**: wall-height eligibility check
 
+#### Curious Climber (from Shimeji)
+Cat climbs partway up a wall (30-60% of element height) → pauses → loses interest → climbs back down or slides.
+
+**FSM**: `:bs/climbing` (up, height-goal) → `:bs/climb-idle` (brief) → `:bs/climbing` (down) or `:bs/wall-sliding`
+**Trigger**: Energy 0.3–0.6, tall element within reach
+**Infrastructure**: height-goal parameter in `tick-climbing` (stop at target offset, not at edge)
+
+#### Edge-to-Climb-Down
+At element edge → goes over the edge → climbs down the element side → slides or drops.
+
+**FSM**: `:bs/edge-contemplating` → `:bs/corner-transition` → `:bs/climbing` (down) → `:bs/wall-sliding` or `:bs/falling`
+**Trigger**: 15% chance variant of edge-contemplating (instead of turning around)
+**Infrastructure**: corner-floor-to-wall primitive
+
 ### Phase 5b Scenes — Multi-Step & Side Collision
 
 #### Box Explorer
@@ -584,6 +598,8 @@ The same `querySelectorAll` + `getBoundingClientRect` scan, with additional geom
 **Theme**: Cat uses vertical surfaces.
 
 Infrastructure:
+- Surface-valid transition gate (prevent wall cat from entering floor-only state)
+- Behavior successor constraints (`valid-next-behaviors` function)
 - Wall-surface-detection in `scan-surfaces-data`
 - Computed transform string (retire `.facing-left` class toggle)
 - Rotation pivot offset compensation (24px)
@@ -591,10 +607,11 @@ Infrastructure:
 - `tick-climbing`, `tick-climb-idle`, `tick-wall-sliding` handlers
 - `energy-rates` entries for new states
 - `collision-rect` helper for rotated bounds
+- Height-goal parameter in `tick-climbing` (for Curious Climber)
 
-Scenes: Proud Climber, Lazy Wall Slide, Startle and Flee Up, Wall Backflip, Cat Confused at Wall
+Scenes: Proud Climber, Lazy Wall Slide, Startle and Flee Up, Wall Backflip, Cat Confused at Wall, Curious Climber, Edge-to-Climb-Down
 
-**Shippable result**: Cat climbs walls, clings, slides down, does backflips. The unused climb sprites finally activate.
+**Shippable result**: Cat climbs walls, clings, slides down, does backflips, explores walls curiously, climbs down from edges.
 
 ### Phase 5b: Multi-Step Scenes + Side Collision
 **Theme**: Cat has complex behaviors and reacts to throws.
@@ -629,6 +646,118 @@ Scenes: Ceiling Traverse, Full Perimeter Walk, Nap on Warm Spot
 - Interior container behavior (with visual-container gating)
 - Hallway bounce (wall-to-wall in narrow gaps)
 - Touch device support
+- Multiple drag poses (requires sprite art)
+- Dangling-legs-on-edge sitting variant (requires sprite art)
+- Per-frame animation timing for specific animations
+
+## Cross-Cutting: Shimeji-Informed Improvements
+
+Lessons from [Shimeji prior art analysis](shimeji_prior_art.md). These improvements apply across phases and should be implemented as infrastructure alongside Phase 4 or at the start of Phase 5.
+
+### Universal Recovery Fallback (Phase 4)
+
+Shimeji's `Fall` behavior is the catch-all — when no behavior's conditions are met, the mascot falls. Page buddy lacks this safety net.
+
+**`enter-state-action` default branch**: Currently the `case` has no default. An unknown state silently returns `nil`, and the transition is a no-op. Add a `:default` branch that logs a warning and transitions to `:bs/falling`.
+
+**Watchdog timer**: If any state persists for more than 10 seconds without a meaningful transition, force `:bs/falling`. One-time infrastructure that future-proofs all states.
+
+Implementation: add to Phase 4 migration step 1 (infrastructure).
+
+### Surface-Valid Transition Gate (Phase 5a prerequisite)
+
+Shimeji's `NextBehaviorList` constrains what can follow a behavior — wall behaviors only list wall-valid successors. Page buddy's `pick-next-behavior` selects from a global weighted pool with no surface awareness.
+
+**Critical for Phase 5**: A wall-attached cat could `pick-next-behavior` → `:bs/walking` (floor-only). The tick dispatcher would route to `tick-walking`, which does horizontal movement — wrong for a wall.
+
+**Solution**: Gate in `:buddy/ax.enter-state`:
+
+```clojure
+(def surface-valid-states
+  {:surface/wall    #{:bs/climbing :bs/climb-idle :bs/wall-sliding :bs/corner-transition :bs/falling :bs/jumping :bs/dragging :bs/being-hit}
+   :surface/ceiling #{:bs/ceiling-walking :bs/ceiling-idle :bs/corner-transition :bs/falling :bs/jumping :bs/dragging :bs/being-hit}
+   :surface/floor   nil})  ;; nil = all states valid
+
+:buddy/ax.enter-state
+(let [[new-state] args
+      surface-type (derive-surface-type state)
+      valid-set (get surface-valid-states surface-type)]
+  (if (or (nil? valid-set) (valid-set new-state))
+    (enter-state-action state uf-data new-state)
+    (enter-state-action state uf-data :bs/falling)))
+```
+
+This is the architectural decision that should be made before Phase 5 implementation. Implement at the start of Phase 5a.
+
+### Behavior Successor Constraints (Phase 5a)
+
+Beyond surface-validity, constrain behavior *sequences* for coherence:
+
+| After | Valid next (constrained pool) |
+|-------|------------------------------|
+| `:bs/stunned` (hard landing) | `:bs/idle`, `:bs/sitting`, `:bs/touching` — no immediate running |
+| `:bs/climb-idle` | `:bs/climbing`, `:bs/wall-sliding`, `:bs/wall-jump`, `:bs/falling` — wall-only |
+| `:bs/ceiling-idle` | `:bs/ceiling-walking`, `:bs/ceiling-drop`, `:bs/falling` — ceiling-only |
+| `:bs/edge-contemplating` | `:bs/walking`, `:bs/jumping`, `:bs/perching` — no sleeping on edges |
+
+Implement as a `constrained-next-behaviors` function that `pick-next-behavior` consults. When constraints exist, filter the global pool; when `nil`, use the full pool (current behavior).
+
+### Horizontal Air Resistance (Phase 4)
+
+Page buddy has no horizontal drag — thrown cats maintain full horizontal speed. Shimeji uses `RegistanceX=0.05` (5% speed loss per tick).
+
+**Add to `tick-jumping`**:
+```clojure
+(def air-drag-x 0.95)
+new-vx (* vx air-drag-x)
+```
+
+Improves: throw arcs (deceleration), jump arcs (subtle asymmetry), wall-jump trajectories (natural deceleration toward landing). One line, significant visual improvement.
+
+Implementation: add to Phase 4 migration step 1 (infrastructure). Config key: `:cfg/air-drag-x 0.95`.
+
+### Curious Climber Scene (Phase 5a)
+
+From Shimeji's `ClimbHalfwayAlongWall` — climb partway up a wall, pause, come back down. Pure cat behavior (curious exploration, loses interest).
+
+**FSM**: `:bs/walking` → `:bs/climbing` (up, to 30-60% of element height) → `:bs/climb-idle` (brief) → `:bs/climbing` (down) or `:bs/wall-sliding` → landing
+**Trigger**: Energy 0.3–0.6, tall element within reach
+**Infrastructure**: Height-goal parameter in `tick-climbing` (stop at target offset, not edge)
+
+Add to Phase 5a scene list.
+
+### Edge-to-Climb-Down (Phase 5a)
+
+At element edge, 15% chance to go *over* the edge and climb down the element's side instead of turning around. Very cat-like.
+
+**FSM**: `:bs/edge-contemplating` → `:bs/corner-transition` (floor to wall) → `:bs/climbing` (down) → `:bs/wall-sliding` or `:bs/falling`
+
+Uses existing climb-down primitive. Add as an edge-contemplating variant in Phase 5a.
+
+### Crawl Speed (Phase 5b)
+
+Shimeji has Walk/Run/Crawl. Formalize the stalking speed already mentioned in the speed variants table (`0.5 × walk-speed`). Not a new state — a speed parameter on `:bs/walking`:
+
+```clojure
+(case (:buddy/walk-mode state)
+  :walk/crawl (* walk-speed 0.5)
+  :walk/normal walk-speed
+  walk-speed)
+```
+
+Used by Cat Hunting scene. Ensure animation frame rate scales with speed.
+
+### Class-Based DOM Exclusion (Phase 4)
+
+Shimeji insight: hardcoded DOM IDs limit extensibility. `scan-surfaces-data` filters by `id="page-buddy-container"` and `id="page-buddy"`. Switch to CSS class-based exclusion (`.page-buddy-element`). Near-zero cost, future-proofs multi-buddy.
+
+## Sprite Wishes (no code dependency)
+
+Sprites that would enhance behavior if they existed:
+- **Sit-on-edge / dangling legs** — for edge-contemplating variant
+- **Drag angle poses** — multiple grab poses (Shimeji has threshold bands)
+- **Stretch pose** — post-sleep stretch (currently reuses touch)
+- **Kneading pose** — rhythmic touch variant
 
 ## Sprite Coverage
 
@@ -687,3 +816,14 @@ Scenes: Ceiling Traverse, Full Perimeter Walk, Nap on Warm Spot
 > - Energy rates mandatory for all new states (Clojure reviewer)
 > - Position relative to element for wall/ceiling attachment (scene reviewer)
 > - Wall-run deceleration as foundational physics, not separate state (transition reviewer)
+>
+> **Shimeji Prior Art Review**: Two subagents researched Shimeji-ee/Shimeji-Desktop source (XML configs, Java action classes). Synthesized into `shimeji_prior_art.md`. Two analysis subagents (Epupp Assistant, Clojure) compared against the plan.
+>
+> Key additions from Shimeji analysis:
+> - Universal recovery fallback: `enter-state-action` default branch + watchdog timer (Shimeji's `Fall` catch-all)
+> - Surface-valid transition gate: prevent wall cat from entering floor-only state (Shimeji's `NextBehaviorList`)
+> - Behavior successor constraints: no sprinting after hard landing, no sleeping on edges
+> - Horizontal air resistance: `vx *= 0.95` per tick (Shimeji's `RegistanceX=0.05`)
+> - Curious Climber scene: climb-halfway-then-come-back (Shimeji's `ClimbHalfwayAlongWall`)
+> - Edge-to-climb-down: go over edge and climb down side (15% variant)
+> - Class-based DOM exclusion: future-proof multi-buddy (`.page-buddy-element` not ID)
