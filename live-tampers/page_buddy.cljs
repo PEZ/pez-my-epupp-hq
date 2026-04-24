@@ -520,7 +520,8 @@
        :uf/fxs (anim-fxs el :anim/stunned)}
 
       :bs/being-hit
-      {:uf/db (assoc base-db :buddy/state-end (+ now 400))
+      {:uf/db (assoc base-db :buddy/state-end (+ now 400)
+                    :buddy/current-surface nil :surface/offset-x nil)
        :uf/fxs (anim-fxs el :anim/being-hit)}
 
       :bs/stunned
@@ -553,11 +554,11 @@
          :uf/fxs (anim-fxs el :anim/idle)})
 
       :bs/dragging
-      {:uf/db (assoc base-db :buddy/current-surface nil)
+      {:uf/db (assoc base-db :buddy/current-surface nil :surface/offset-x nil)
        :uf/fxs (anim-fxs el :anim/being-hit)}
 
       :bs/cursor-chasing
-      {:uf/db base-db
+      {:uf/db (assoc base-db :buddy/current-surface nil :surface/offset-x nil)
        :uf/fxs (anim-fxs el :anim/walk)}
 
       (do (js/console.warn "Unknown state:" (pr-str new-bstate))
@@ -652,7 +653,7 @@
           {:uf/db (assoc state
                          :pos/x clamped-x :pos/y fy
                          :vel/x 0 :vel/y 0
-                         :buddy/current-surface nil)
+                         :buddy/current-surface nil :surface/offset-x nil)
            :uf/fxs (position-fxs container clamped-x fy)
            :uf/dxs [[:buddy/ax.enter-state land-state]]})
         {:uf/db (assoc state :pos/x clamped-x :pos/y new-y :vel/x vx :vel/y new-vy)
@@ -736,7 +737,8 @@
       (let [jump-off? (< (rand) 0.4)]
         (if jump-off?
           (let [vx (if (= facing :facing/left) -2 2)]
-            {:uf/db (assoc state :vel/x vx :vel/y -2 :buddy/current-surface nil)
+            {:uf/db (assoc state :vel/x vx :vel/y -2
+                           :buddy/current-surface nil :surface/offset-x nil)
              :uf/dxs [[:buddy/ax.enter-state :bs/jumping]]})
           (let [new-facing (if (= facing :facing/left) :facing/right :facing/left)]
             {:uf/db (assoc state :buddy/facing new-facing)
@@ -762,7 +764,8 @@
             break-free? (and (> held-time 2000) (< (rand) 0.05))]
         (if break-free?
           (let [vx (if (= new-facing :facing/left) 4 -4)]
-            {:uf/db (assoc state :vel/x vx :vel/y -6 :pos/x new-x :pos/y new-y :buddy/current-surface nil)
+            {:uf/db (assoc state :vel/x vx :vel/y -6 :pos/x new-x :pos/y new-y
+                           :buddy/current-surface nil :surface/offset-x nil)
              :uf/dxs [[:buddy/ax.enter-state :bs/jumping]]})
           {:uf/db (assoc state :pos/x new-x :pos/y new-y :buddy/facing new-facing)
            :uf/fxs (into (position-fxs container new-x new-y)
@@ -877,7 +880,6 @@
   "States that auto-transition when their timer expires. Maps current → next."
   {:bs/landing   :bs/idle
    :bs/being-hit :bs/stunned
-   :bs/stunned   :bs/idle
    :bs/sleeping  :bs/idle
    :bs/meowing   :bs/idle
    :bs/touching  :bs/idle})
@@ -948,7 +950,7 @@
                             (not= (check-surface-validity surface) :surface/valid))
             behavior-result
             (if surface-lost?
-              {:uf/db (assoc state :buddy/current-surface nil)
+              {:uf/db (assoc state :buddy/current-surface nil :surface/offset-x nil)
                :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}
               (if-let [next-state (timeout-transitions buddy-state)]
                 (when (and state-end (> now state-end))
@@ -967,6 +969,12 @@
                   :bs/edge-contemplating (tick-edge-contemplating state uf-data)
                   :bs/dragging (tick-dragging state uf-data)
                   :bs/cursor-chasing (tick-cursor-chasing state uf-data)
+                  :bs/stunned
+                  (when (and state-end (> now state-end))
+                    (if (or (:buddy/current-surface state)
+                            (>= (:pos/y state) (floor-y)))
+                      {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
+                      {:uf/dxs [[:buddy/ax.enter-state :bs/falling]]}))
                   nil)))
             result (if behavior-result
                      (update behavior-result :uf/db #(or % state))
@@ -993,7 +1001,8 @@
       (let [[vx vy] args
             clamped-vx (max -15 (min 15 (or vx 0)))
             clamped-vy (max -15 (min 15 (or vy 0)))]
-        {:uf/db (assoc state :vel/x clamped-vx :vel/y clamped-vy :buddy/current-surface nil)
+        {:uf/db (assoc state :vel/x clamped-vx :vel/y clamped-vy
+                       :buddy/current-surface nil :surface/offset-x nil)
          :uf/dxs [[:buddy/ax.enter-state :bs/jumping]]})
 
       :buddy/ax.react-to-click
