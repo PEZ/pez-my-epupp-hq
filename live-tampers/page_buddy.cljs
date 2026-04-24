@@ -620,6 +620,216 @@
        :uf/fxs (position-fxs container clamped-x new-y)})))
 
 
+(defn tick-idle
+  "Tick handler for idle state — check timeout, cursor chase opportunity, mouse facing."
+  [state uf-data]
+  (let [now (:system/now uf-data)
+        {:keys [state-end]} state
+        mouse-x (:mouse/x uf-data)
+        mouse-y (:mouse/y uf-data)
+        last-mx (:last-mouse-x state)
+        last-my (:last-mouse-y state)
+        mouse-moved? (or (nil? last-mx)
+                         (> (js/Math.abs (- (or mouse-x 0) last-mx)) 5)
+                         (> (js/Math.abs (- (or mouse-y 0) last-my)) 5))
+        still-since (if mouse-moved? now (or (:mouse-still-since state) now))
+        mouse-still-time (- now still-since)
+        state (assoc state
+                     :last-mouse-x mouse-x
+                     :last-mouse-y mouse-y
+                     :mouse-still-since still-since)]
+    (if (and state-end (> now state-end))
+      {:uf/db state
+       :uf/dxs [[:buddy/ax.enter-state (pick-next-behavior (or (:energy state) 0.8) (:roll uf-data))]]}
+      (if (and mouse-x mouse-y (> mouse-still-time 2000))
+        (let [cat-center-x (+ (:x state) (/ (* (:w sprites/frame-size) (:scale config)) 2))
+              dx (- mouse-x cat-center-x)
+              dy (- mouse-y (:y state))
+              dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))]
+          (if (and (< dist 500) (> dist 180) (< (rand) 0.005))
+            {:uf/db state
+             :uf/dxs [[:buddy/ax.enter-state :cursor-chasing]]}
+            (or (mouse-facing-fxs state uf-data)
+                {:uf/db state})))
+        (or (mouse-facing-fxs state uf-data)
+            {:uf/db state})))))
+
+(defn tick-perching
+  "Tick handler for perching — walk toward surface target and jump onto it."
+  [state uf-data]
+  (let [surfaces (:surfaces/visible uf-data)
+        {:keys [x y facing container el]} state
+        target (when surfaces (find-perch-target surfaces x y))]
+    (if target
+      (let [cat-w (* (:w sprites/frame-size) (:scale config))
+            cat-center-x (+ x (/ cat-w 2))
+            target-center-x (+ (:left target) (/ (:width target) 2))
+            dx (- target-center-x cat-center-x)
+            dist (js/Math.abs dx)
+            walk-facing (if (pos? dx) :right :left)]
+        (if (< dist 50)
+          (let [jump-params (compute-jump-to-surface x y target)]
+            (if jump-params
+              {:uf/db (assoc state :vx (:vx jump-params) :vy (:vy jump-params)
+                             :buddy-state :jumping)
+               :uf/fxs (anim-fxs el :jump)}
+              {:uf/dxs [[:buddy/ax.enter-state :idle]]}))
+          (let [speed (:walk-speed config)
+                step (if (= walk-facing :right) speed (- speed))
+                new-x (+ x step)
+                max-x (- js/window.innerWidth cat-w)
+                clamped-x (max 0 (min new-x max-x))
+                facing-update (when (not= walk-facing facing)
+                                (facing-fxs el walk-facing))]
+            {:uf/db (assoc state :x clamped-x :facing walk-facing)
+             :uf/fxs (into (position-fxs container clamped-x y)
+                           (or facing-update []))})))
+      {:uf/dxs [[:buddy/ax.enter-state :idle]]})))
+
+(defn tick-edge-contemplating
+  "Tick handler for edge contemplation — decide to jump off or turn around."
+  [state uf-data]
+  (let [now (:system/now uf-data)
+        {:keys [state-end facing el]} state]
+    (when (and state-end (> now state-end))
+      (let [jump-off? (< (rand) 0.4)]
+        (if jump-off?
+          (let [vx (if (= facing :left) -2 2)]
+            {:uf/db (assoc state :vx vx :vy -2 :current-surface nil)
+             :uf/dxs [[:buddy/ax.enter-state :jumping]]})
+          (let [new-facing (if (= facing :left) :right :left)]
+            {:uf/db (assoc state :facing new-facing)
+             :uf/fxs (facing-fxs el new-facing)
+             :uf/dxs [[:buddy/ax.enter-state :walking]]}))))))
+
+(defn tick-dragging
+  "Tick handler for dragging — follow drag position, handle break-free."
+  [state uf-data]
+  (let [now (:system/now uf-data)
+        drag (:drag/data uf-data)
+        {:keys [container]} state
+        cat-h (* (:h sprites/frame-size) (:scale config))]
+    (when (:active? drag)
+      (let [dx (- (:x drag) (:x state))
+            new-x (:x drag)
+            new-y (- (:y drag) (/ cat-h 2))
+            new-facing (cond (> dx 2) :right (< dx -2) :left :else (:facing state))
+            held-time (- now (or (:state-timer state) now))
+            break-free? (and (> held-time 2000) (< (rand) 0.05))]
+        (if break-free?
+          (let [vx (if (= new-facing :left) 4 -4)]
+            {:uf/db (assoc state :vx vx :vy -6 :x new-x :y new-y :current-surface nil)
+             :uf/dxs [[:buddy/ax.enter-state :jumping]]})
+          {:uf/db (assoc state :x new-x :y new-y :facing new-facing)
+           :uf/fxs (into (position-fxs container new-x new-y)
+                         (when (not= new-facing (:facing state))
+                           (facing-fxs (:el state) new-facing)))})))))
+
+(defn tick-cursor-chasing
+  "Tick handler for cursor chasing — walk toward mouse, stop if mouse moves or reached."
+  [state uf-data]
+  (let [mouse-x (:mouse/x uf-data)
+        mouse-y (:mouse/y uf-data)
+        {:keys [x y facing el container]} state
+        cat-w (* (:w sprites/frame-size) (:scale config))
+        cat-center-x (+ x (/ cat-w 2))]
+    (if (nil? mouse-x)
+      {:uf/dxs [[:buddy/ax.enter-state :idle]]}
+      (let [dx (- mouse-x cat-center-x)
+            dy (- mouse-y y)
+            dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))
+            last-mx (:last-mouse-x state)
+            last-my (:last-mouse-y state)
+            mouse-moved? (and last-mx
+                              (or (> (js/Math.abs (- mouse-x last-mx)) 30)
+                                  (> (js/Math.abs (- mouse-y last-my)) 30)))]
+        (cond
+          mouse-moved?
+          {:uf/db (assoc state :last-mouse-x mouse-x :last-mouse-y mouse-y)
+           :uf/dxs [[:buddy/ax.enter-state :idle]]}
+
+          (<= dist 180)
+          {:uf/db (assoc state :last-mouse-x mouse-x :last-mouse-y mouse-y)
+           :uf/dxs [[:buddy/ax.enter-state :idle]]}
+
+          :else
+          (let [walk-facing (if (pos? dx) :right :left)
+                speed (:walk-speed config)
+                step (if (= walk-facing :right) speed (- speed))
+                new-x (+ x step)
+                max-x (- js/window.innerWidth cat-w)
+                clamped-x (max 0 (min new-x max-x))
+                facing-changed? (not= walk-facing facing)]
+            {:uf/db (assoc state :x clamped-x :facing walk-facing
+                           :last-mouse-x mouse-x :last-mouse-y mouse-y)
+             :uf/fxs (into (position-fxs container clamped-x y)
+                           (when facing-changed?
+                             (facing-fxs el walk-facing)))}))))))
+
+(defn init-action
+  "Initialize buddy from DOM refs."
+  [dom-refs]
+  (let [init-x 100
+        init-y (floor-y)]
+    {:uf/db (merge dom-refs
+                   {:facing :right
+                    :buddy-state nil
+                    :frame 0
+                    :frame-count 0
+                    :current-anim nil
+                    :x init-x
+                    :y init-y
+                    :energy 0.8})
+     :uf/fxs [[:dom/fx.inject-css (make-sprite-css)]
+              [:dom/fx.set-transform (:container dom-refs) init-x init-y]
+              [:dom/fx.add-click-handler (:el dom-refs)]
+              [:dom/fx.add-drag-handler (:container dom-refs)]
+              [:dom/fx.add-mouse-tracker]
+              [:dom/fx.add-click-tracker]
+              [:dom/fx.add-scroll-tracker]
+              [:dom/fx.scan-surfaces]]
+     :uf/dxs [[:buddy/ax.enter-state :idle]]}))
+
+(defn react-to-click-action
+  "React to a page click — flinch or face toward it."
+  [state click-x click-y]
+  (let [{:keys [x y buddy-state el]} state
+        cat-center-x (+ x (/ (* (:w sprites/frame-size) (:scale config)) 2))
+        dx (- click-x cat-center-x)
+        dy (- click-y (+ y (/ (* (:h sprites/frame-size) (:scale config)) 2)))
+        dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))
+        ground-state? (contains? #{:idle :walking :running :sitting :meowing :touching :perching :edge-contemplating} buddy-state)]
+    (when ground-state?
+      (cond
+        (and (< dist 200) (< (rand) 0.3))
+        (let [run-facing (if (pos? dx) :left :right)]
+          {:uf/db (assoc state :facing run-facing)
+           :uf/fxs (facing-fxs el run-facing)
+           :uf/dxs [[:buddy/ax.enter-state :being-hit]]})
+
+        (< dist 500)
+        (let [face-dir (if (pos? dx) :right :left)]
+          (when (not= face-dir (:facing state))
+            {:uf/db (assoc state :facing face-dir)
+             :uf/fxs (facing-fxs el face-dir)}))))))
+
+(defn stop-action
+  "Teardown — cancel RAF, remove handlers and DOM, reset env."
+  [state uf-data]
+  (let [{:keys [raf-id container]} state]
+    {:uf/db nil
+     :uf/fxs [[:dom/fx.cancel-raf raf-id]
+              [:dom/fx.remove-drag-handler container (:env/drag-handler uf-data)]
+              [:dom/fx.remove-mouse-tracker (:env/mouse-handler uf-data)]
+              [:dom/fx.remove-click-tracker (:env/click-handler uf-data)]
+              [:dom/fx.remove-scroll-tracker (:env/scroll-handler uf-data)]
+              [:dom/fx.remove-element container]
+              [:log/fx.log "Page buddy stopped."]]
+     :uf/env {:mouse-x nil :mouse-y nil :scroll-y 0
+              :drag {:active? false :x nil :y nil :vx 0 :vy 0}
+              :surfaces nil :drag-handler nil :mouse-handler nil
+              :click-handler nil :scroll-handler nil}}))
+
 (defn handle-action
   "Pure action handler. Returns {:uf/db :uf/fxs :uf/dxs :uf/env} or nil."
   [state uf-data action]
@@ -630,27 +840,7 @@
       {:uf/db (apply assoc state args)}
 
       :buddy/ax.init
-      (let [[dom-refs] args
-            init-x 100
-            init-y (floor-y)]
-        {:uf/db (merge dom-refs
-                       {:facing :right
-                        :buddy-state nil
-                        :frame 0
-                        :frame-count 0
-                        :current-anim nil
-                        :x init-x
-                        :y init-y
-                        :energy 0.8})
-         :uf/fxs [[:dom/fx.inject-css (make-sprite-css)]
-                  [:dom/fx.set-transform (:container dom-refs) init-x init-y]
-                  [:dom/fx.add-click-handler (:el dom-refs)]
-                  [:dom/fx.add-drag-handler (:container dom-refs)]
-                  [:dom/fx.add-mouse-tracker]
-                  [:dom/fx.add-click-tracker]
-                  [:dom/fx.add-scroll-tracker]
-                  [:dom/fx.scan-surfaces]]
-         :uf/dxs [[:buddy/ax.enter-state :idle]]})
+      (let [[dom-refs] args] (init-action dom-refs))
 
       :buddy/ax.enter-state
       (let [[new-bstate] args
@@ -701,45 +891,10 @@
               {:uf/db (assoc state :current-surface nil)
                :uf/dxs [[:buddy/ax.enter-state :falling]]}
               (case buddy-state
-                :idle
-                (let [mouse-x (:mouse/x uf-data)
-                      mouse-y (:mouse/y uf-data)
-                      last-mx (:last-mouse-x state)
-                      last-my (:last-mouse-y state)
-                      mouse-moved? (or (nil? last-mx)
-                                       (> (js/Math.abs (- (or mouse-x 0) last-mx)) 5)
-                                       (> (js/Math.abs (- (or mouse-y 0) last-my)) 5))
-                      still-since (if mouse-moved? now (or (:mouse-still-since state) now))
-                      mouse-still-time (- now still-since)
-                      state (assoc state
-                                   :last-mouse-x mouse-x
-                                   :last-mouse-y mouse-y
-                                   :mouse-still-since still-since)]
-                  (if (and state-end (> now state-end))
-                    {:uf/db state
-                     :uf/dxs [[:buddy/ax.enter-state (pick-next-behavior (or (:energy state) 0.8) (:roll uf-data))]]}
-                    ;; Check for cursor chase: mouse near, still >2s, 20% chance per check
-                    (if (and mouse-x mouse-y (> mouse-still-time 2000))
-                      (let [cat-center-x (+ (:x state) (/ (* (:w sprites/frame-size) (:scale config)) 2))
-                            dx (- mouse-x cat-center-x)
-                            dy (- mouse-y (:y state))
-                            dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))]
-                        (if (and (< dist 500) (> dist 180) (< (rand) 0.005))
-                          {:uf/db state
-                           :uf/dxs [[:buddy/ax.enter-state :cursor-chasing]]}
-                          (or (mouse-facing-fxs state uf-data)
-                              {:uf/db state})))
-                      (or (mouse-facing-fxs state uf-data)
-                          {:uf/db state}))))
-
-                :walking
-                (tick-walking state now)
-
-                :running
-                (tick-walking state now)
-
-                (:jumping :falling)
-                (tick-jumping state uf-data)
+                :idle (tick-idle state uf-data)
+                :walking (tick-walking state now)
+                :running (tick-walking state now)
+                (:jumping :falling) (tick-jumping state uf-data)
 
                 :landing
                 (when (and state-end (> now state-end))
@@ -771,117 +926,11 @@
                 (when (and state-end (> now state-end))
                   {:uf/dxs [[:buddy/ax.enter-state :idle]]})
 
-                :perching
-                (let [surfaces (:surfaces/visible uf-data)
-                      {:keys [x y facing container el]} state
-                      target (when surfaces (find-perch-target surfaces x y))]
-                  (if target
-                    (let [cat-w (* (:w sprites/frame-size) (:scale config))
-                          cat-center-x (+ x (/ cat-w 2))
-                          target-center-x (+ (:left target) (/ (:width target) 2))
-                          dx (- target-center-x cat-center-x)
-                          dist (js/Math.abs dx)
-                          walk-facing (if (pos? dx) :right :left)]
-                      (if (< dist 50)
-                        (let [jump-params (compute-jump-to-surface x y target)]
-                          (if jump-params
-                            {:uf/db (assoc state :vx (:vx jump-params) :vy (:vy jump-params)
-                                           :buddy-state :jumping)
-                             :uf/fxs (anim-fxs el :jump)}
-                            {:uf/dxs [[:buddy/ax.enter-state :idle]]}))
-                        (let [speed (:walk-speed config)
-                              step (if (= walk-facing :right) speed (- speed))
-                              new-x (+ x step)
-                              max-x (- js/window.innerWidth cat-w)
-                              clamped-x (max 0 (min new-x max-x))
-                              facing-update (when (not= walk-facing facing)
-                                              (facing-fxs el walk-facing))]
-                          {:uf/db (assoc state :x clamped-x :facing walk-facing)
-                           :uf/fxs (into (position-fxs container clamped-x y)
-                                         (or facing-update []))})))
-                    {:uf/dxs [[:buddy/ax.enter-state :idle]]}))
-
-                :edge-contemplating
-                (when (and state-end (> now state-end))
-                  (let [{:keys [facing el]} state
-                        jump-off? (< (rand) 0.4)]
-                    (if jump-off?
-                      ;; Jump off the edge — small outward velocity
-                      (let [vx (if (= facing :left) -2 2)]
-                        {:uf/db (assoc state :vx vx :vy -2 :current-surface nil)
-                         :uf/dxs [[:buddy/ax.enter-state :jumping]]})
-                      ;; Turn around and walk back
-                      (let [new-facing (if (= facing :left) :right :left)]
-                        {:uf/db (assoc state :facing new-facing)
-                         :uf/fxs (facing-fxs el new-facing)
-                         :uf/dxs [[:buddy/ax.enter-state :walking]]}))))
-
-                :dragging
-                (let [drag (:drag/data uf-data)
-                      {:keys [container]} state
-                      cat-h (* (:h sprites/frame-size) (:scale config))]
-                  (when (:active? drag)
-                    (let [dx (- (:x drag) (:x state))
-                          new-x (:x drag)
-                          new-y (- (:y drag) (/ cat-h 2))
-                          new-facing (cond (> dx 2) :right (< dx -2) :left :else (:facing state))
-                          held-time (- now (or (:state-timer state) now))
-                          break-free? (and (> held-time 2000) (< (rand) 0.05))]
-                      (if break-free?
-                        ;; Cat squirms free!
-                        (let [vx (if (= new-facing :left) 4 -4)]
-                          {:uf/db (assoc state :vx vx :vy -6 :x new-x :y new-y :current-surface nil)
-                           :uf/dxs [[:buddy/ax.enter-state :jumping]]})
-                        {:uf/db (assoc state :x new-x :y new-y :facing new-facing)
-                         :uf/fxs (into (position-fxs container new-x new-y)
-                                       (when (not= new-facing (:facing state))
-                                         (facing-fxs (:el state) new-facing)))}))))
-
-                :cursor-chasing
-                (let [mouse-x (:mouse/x uf-data)
-                      mouse-y (:mouse/y uf-data)
-                      {:keys [x y facing el container]} state
-                      cat-w (* (:w sprites/frame-size) (:scale config))
-                      cat-center-x (+ x (/ cat-w 2))]
-                  (if (nil? mouse-x)
-                    ;; Lost mouse info, go idle
-                    {:uf/dxs [[:buddy/ax.enter-state :idle]]}
-                    (let [dx (- mouse-x cat-center-x)
-                          dy (- mouse-y y)
-                          dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))
-                          last-mx (:last-mouse-x state)
-                          last-my (:last-mouse-y state)
-                          mouse-moved? (and last-mx
-                                            (or (> (js/Math.abs (- mouse-x last-mx)) 30)
-                                                (> (js/Math.abs (- mouse-y last-my)) 30)))]
-                      (cond
-                        ;; Mouse moved significantly — cat stops chasing
-                        mouse-moved?
-                        {:uf/db (assoc state :last-mouse-x mouse-x :last-mouse-y mouse-y)
-                         :uf/dxs [[:buddy/ax.enter-state :idle]]}
-
-                        ;; Reached orbit distance — stop and look
-                        (<= dist 180)
-                        {:uf/db (assoc state :last-mouse-x mouse-x :last-mouse-y mouse-y)
-                         :uf/dxs [[:buddy/ax.enter-state :idle]]}
-
-                        ;; Walk toward mouse
-                        :else
-                        (let [walk-facing (if (pos? dx) :right :left)
-                              speed (:walk-speed config)
-                              step (if (= walk-facing :right) speed (- speed))
-                              new-x (+ x step)
-                              max-x (- js/window.innerWidth cat-w)
-                              clamped-x (max 0 (min new-x max-x))
-                              facing-changed? (not= walk-facing facing)]
-                          {:uf/db (assoc state :x clamped-x :facing walk-facing
-                                         :last-mouse-x mouse-x :last-mouse-y mouse-y)
-                           :uf/fxs (into (position-fxs container clamped-x y)
-                                         (when facing-changed?
-                                           (facing-fxs el walk-facing)))})))))
-
+                :perching (tick-perching state uf-data)
+                :edge-contemplating (tick-edge-contemplating state uf-data)
+                :dragging (tick-dragging state uf-data)
+                :cursor-chasing (tick-cursor-chasing state uf-data)
                 nil))]
-        ;; Always persist energy update, merge with behavior result
         (if behavior-result
           (update behavior-result :uf/db #(or % state))
           {:uf/db state}))
@@ -897,47 +946,18 @@
          :uf/dxs [[:buddy/ax.enter-state :jumping]]})
 
       :buddy/ax.react-to-click
-      (let [[click-x click-y] args
-            {:keys [x y buddy-state el]} state
-            cat-center-x (+ x (/ (* (:w sprites/frame-size) (:scale config)) 2))
-            dx (- click-x cat-center-x)
-            dy (- click-y (+ y (/ (* (:h sprites/frame-size) (:scale config)) 2)))
-            dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))
-            ground-state? (contains? #{:idle :walking :running :sitting :meowing :touching :perching :edge-contemplating} buddy-state)]
-        (when ground-state?
-          (cond
-            (and (< dist 200) (< (rand) 0.3))
-            (let [run-facing (if (pos? dx) :left :right)]
-              {:uf/db (assoc state :facing run-facing)
-               :uf/fxs (facing-fxs el run-facing)
-               :uf/dxs [[:buddy/ax.enter-state :being-hit]]})
-
-            (< dist 500)
-            (let [face-dir (if (pos? dx) :right :left)]
-              (when (not= face-dir (:facing state))
-                {:uf/db (assoc state :facing face-dir)
-                 :uf/fxs (facing-fxs el face-dir)})))))
+      (let [[click-x click-y] args]
+        (react-to-click-action state click-x click-y))
 
       :buddy/ax.stop
-      (let [{:keys [raf-id container]} state]
-        {:uf/db nil
-         :uf/fxs [[:dom/fx.cancel-raf raf-id]
-                  [:dom/fx.remove-drag-handler container (:env/drag-handler uf-data)]
-                  [:dom/fx.remove-mouse-tracker (:env/mouse-handler uf-data)]
-                  [:dom/fx.remove-click-tracker (:env/click-handler uf-data)]
-                  [:dom/fx.remove-scroll-tracker (:env/scroll-handler uf-data)]
-                  [:dom/fx.remove-element container]
-                  [:log/fx.log "Page buddy stopped."]]
-         :uf/env {:mouse-x nil :mouse-y nil :scroll-y 0
-                  :drag {:active? false :x nil :y nil :vx 0 :vy 0}
-                  :surfaces nil :drag-handler nil :mouse-handler nil
-                  :click-handler nil :scroll-handler nil}})
+      (stop-action state uf-data)
 
       :buddy/ax.env-merge
       {:uf/env (apply hash-map args)}
 
       (do (js/console.warn "Unhandled action:" (pr-str action))
           nil))))
+
 
 ;; -- Dispatch Loop (single state access point) --
 
