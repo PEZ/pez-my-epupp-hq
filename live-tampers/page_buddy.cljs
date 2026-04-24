@@ -1098,7 +1098,9 @@
   (let [container (js/document.createElement "div")
         el (js/document.createElement "div")]
     (set! (.-id container) "page-buddy-container")
+    (.add (.-classList container) "page-buddy-element")
     (set! (.-id el) "page-buddy")
+    (.add (.-classList el) "page-buddy-element")
     (.appendChild container el)
     (js/document.body.appendChild container)
     (dispatch! [[:buddy/ax.init {:dom/el el :dom/container container}]])
