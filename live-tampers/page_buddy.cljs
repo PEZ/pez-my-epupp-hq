@@ -561,18 +561,22 @@
             [(.-left rect) (- (.-right rect) cat-w)])
           [0 (- js/window.innerWidth cat-w)])
         edge-state (if current-surface :bs/edge-contemplating :bs/idle)
-        move-result (if (< new-x min-bound)
+        move-result (cond
+                      (< new-x min-bound)
                       {:uf/db (assoc state :pos/x min-bound :buddy/facing :facing/right)
                        :uf/fxs (into (position-fxs container min-bound y)
                                      (facing-fxs el :facing/right))
                        :uf/dxs [[:buddy/ax.enter-state edge-state]]}
-                      (if (> new-x max-bound)
-                        {:uf/db (assoc state :pos/x max-bound :buddy/facing :facing/left)
-                         :uf/fxs (into (position-fxs container max-bound y)
-                                       (facing-fxs el :facing/left))
-                         :uf/dxs [[:buddy/ax.enter-state edge-state]]}
-                        {:uf/db (assoc state :pos/x new-x)
-                         :uf/fxs (position-fxs container new-x y)}))]
+
+                      (> new-x max-bound)
+                      {:uf/db (assoc state :pos/x max-bound :buddy/facing :facing/left)
+                       :uf/fxs (into (position-fxs container max-bound y)
+                                     (facing-fxs el :facing/left))
+                       :uf/dxs [[:buddy/ax.enter-state edge-state]]}
+
+                      :else
+                      {:uf/db (assoc state :pos/x new-x)
+                       :uf/fxs (position-fxs container new-x y)})]
     (if (and state-end (> now state-end))
       (update move-result :uf/dxs (fnil conj []) [:buddy/ax.enter-state :bs/idle])
       move-result)))
@@ -750,24 +754,22 @@
             mouse-moved? (and last-mx
                               (or (> (js/Math.abs (- mouse-x last-mx)) 30)
                                   (> (js/Math.abs (- mouse-y last-my)) 30)))]
-        (if mouse-moved?
+        (if (or mouse-moved? (<= dist 180))
           {:uf/db (assoc state :buddy/last-mouse-x mouse-x :buddy/last-mouse-y mouse-y)
            :uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
-          (if (<= dist 180)
-            {:uf/db (assoc state :buddy/last-mouse-x mouse-x :buddy/last-mouse-y mouse-y)
-             :uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
-            (let [walk-facing (if (pos? dx) :facing/right :facing/left)
-                  speed (:cfg/walk-speed config)
-                  step (if (= walk-facing :facing/right) speed (- speed))
-                  new-x (+ x step)
-                  max-x (- js/window.innerWidth cat-w)
-                  clamped-x (max 0 (min new-x max-x))
-                  facing-changed? (not= walk-facing facing)]
-              {:uf/db (assoc state :pos/x clamped-x :buddy/facing walk-facing
-                             :buddy/last-mouse-x mouse-x :buddy/last-mouse-y mouse-y)
-               :uf/fxs (into (position-fxs container clamped-x y)
-                             (when facing-changed?
-                               (facing-fxs el walk-facing)))})))))))
+          (let [walk-facing (if (pos? dx) :facing/right :facing/left)
+                speed (:cfg/walk-speed config)
+                step (if (= walk-facing :facing/right) speed (- speed))
+                new-x (+ x step)
+                max-x (- js/window.innerWidth cat-w)
+                clamped-x (max 0 (min new-x max-x))
+                facing-changed? (not= walk-facing facing)]
+            {:uf/db (assoc state :pos/x clamped-x :buddy/facing walk-facing
+                           :buddy/last-mouse-x mouse-x :buddy/last-mouse-y mouse-y)
+             :uf/fxs (into (position-fxs container clamped-x y)
+                           (when facing-changed?
+                             (facing-fxs el walk-facing)))}))))))
+
 
 (defn init-action
   "Initialize buddy from DOM refs."
@@ -836,6 +838,15 @@
               :surfaces/visible nil :env/drag-handler nil :env/mouse-handler nil
               :env/click-handler nil :env/scroll-handler nil}}))
 
+(def timeout-transitions
+  "States that auto-transition when their timer expires. Maps current → next."
+  {:bs/landing   :bs/idle
+   :bs/being-hit :bs/stunned
+   :bs/stunned   :bs/idle
+   :bs/sleeping  :bs/idle
+   :bs/meowing   :bs/idle
+   :bs/touching  :bs/idle})
+
 (defn handle-action
   "Pure action handler. Returns {:uf/db :uf/fxs :uf/dxs :uf/env} or nil."
   [state uf-data action]
@@ -899,47 +910,24 @@
             (if surface-lost?
               {:uf/db (assoc state :buddy/current-surface nil)
                :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}
-              (case buddy-state
-                :bs/idle (tick-idle state uf-data)
-                :bs/walking (tick-walking state now)
-                :bs/running (tick-walking state now)
-                (:bs/jumping :bs/falling) (tick-jumping state uf-data)
-
-                :bs/landing
+              (if-let [next-state (timeout-transitions buddy-state)]
                 (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})
-
-                :bs/being-hit
-                (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :bs/stunned]]})
-
-                :bs/stunned
-                (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})
-
-                :bs/sitting
-                (let [sit-frames (get-in page-buddy-sprites/animations [:anim/sit :anim/frames])
-                      elapsed (- now state-timer)]
-                  (when (> elapsed (* sit-frames (/ 1000 (:cfg/fps config))))
-                    {:uf/dxs [[:buddy/ax.enter-state :bs/sleeping]]}))
-
-                :bs/sleeping
-                (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})
-
-                :bs/meowing
-                (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})
-
-                :bs/touching
-                (when (and state-end (> now state-end))
-                  {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})
-
-                :bs/perching (tick-perching state uf-data)
-                :bs/edge-contemplating (tick-edge-contemplating state uf-data)
-                :bs/dragging (tick-dragging state uf-data)
-                :bs/cursor-chasing (tick-cursor-chasing state uf-data)
-                nil))]
+                  {:uf/dxs [[:buddy/ax.enter-state next-state]]})
+                (case buddy-state
+                  :bs/idle (tick-idle state uf-data)
+                  :bs/walking (tick-walking state now)
+                  :bs/running (tick-walking state now)
+                  (:bs/jumping :bs/falling) (tick-jumping state uf-data)
+                  :bs/sitting
+                  (let [sit-frames (get-in page-buddy-sprites/animations [:anim/sit :anim/frames])
+                        elapsed (- now state-timer)]
+                    (when (> elapsed (* sit-frames (/ 1000 (:cfg/fps config))))
+                      {:uf/dxs [[:buddy/ax.enter-state :bs/sleeping]]}))
+                  :bs/perching (tick-perching state uf-data)
+                  :bs/edge-contemplating (tick-edge-contemplating state uf-data)
+                  :bs/dragging (tick-dragging state uf-data)
+                  :bs/cursor-chasing (tick-cursor-chasing state uf-data)
+                  nil)))]
         (if behavior-result
           (update behavior-result :uf/db #(or % state))
           {:uf/db state}))
@@ -968,6 +956,7 @@
           nil))))
 
 
+
 ;; -- Dispatch Loop (single state access point) --
 
 (defn make-dispatch
@@ -983,17 +972,9 @@
              all-env []]
         (if remaining
           (let [action (first remaining)
-                result (handle-action state {:system/now (js/Date.now)
-                                             :rng/roll (rand)
-                                             :mouse/x (:mouse/x env)
-                                             :mouse/y (:mouse/y env)
-                                             :scroll/y (:scroll/y env)
-                                             :surfaces/visible (:surfaces/visible env)
-                                             :drag/data (:drag/data env)
-                                             :env/drag-handler (:env/drag-handler env)
-                                             :env/mouse-handler (:env/mouse-handler env)
-                                             :env/click-handler (:env/click-handler env)
-                                             :env/scroll-handler (:env/scroll-handler env)}
+                result (handle-action state
+                                      (merge env {:system/now (js/Date.now)
+                                                  :rng/roll (rand)})
                                       action)
                 new-state (if (and (map? result) (contains? result :uf/db))
                             (:uf/db result)
@@ -1016,6 +997,7 @@
                   (swap! !env merge env-upd))))
             (when (seq all-dxs)
               (dispatch! all-dxs))))))))
+
 
 (def dispatch!
   "Global dispatch function for REPL convenience. Created from make-dispatch."
