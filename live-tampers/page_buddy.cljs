@@ -177,20 +177,11 @@
 (defn floor-y []
   (- js/window.innerHeight 40 (* (:h sprites/frame-size) (:scale config))))
 
-(defn current-ground-y
-  "Returns y-coordinate of current ground plane, considering surfaces."
-  [state]
-  (if-let [surface (:current-surface state)]
-    (let [rect (.getBoundingClientRect (:el surface))
-          cat-h (* (:h sprites/frame-size) (:scale config))]
-      (- (.-top rect) cat-h))
-    (floor-y)))
-
-;; -- Effects (imperative shell — no @!state reads) --
+;; -- Effects (imperative shell — DOM side effects only, no atom writes) --
 
 (defn perform-effect!
-  "Execute a side effect described by an effect vector."
-  [dispatch-fn !env effect]
+  "Execute a side effect. Returns {:env {...}} for env updates, or nil."
+  [dispatch-fn effect]
   (let [[op & args] effect]
     (case op
       :dom/fx.create-buddy
@@ -253,7 +244,7 @@
 
       :dom/fx.add-drag-handler
       (let [[container-node] args
-            !drag-state (atom {:last-x nil :last-y nil :last-t nil})
+            !drag-state (atom {:last-x nil :last-y nil :last-t nil :vx 0 :vy 0})
             move-handler (atom nil)
             up-handler (atom nil)
             down-handler
@@ -263,9 +254,10 @@
               (let [x (.-clientX e)
                     y (.-clientY e)
                     now (js/Date.now)]
-                (reset! !drag-state {:last-x x :last-y y :last-t now})
-                (swap! !env assoc :drag {:active? true :x x :y y :vx 0 :vy 0})
-                (dispatch-fn [[:buddy/ax.enter-state :dragging]])
+                (reset! !drag-state {:last-x x :last-y y :last-t now :vx 0 :vy 0})
+                (dispatch-fn [[:buddy/ax.env-merge
+                               :drag {:active? true :x x :y y :vx 0 :vy 0}]
+                              [:buddy/ax.enter-state :dragging]])
                 (reset! move-handler
                         (fn [me]
                           (let [mx (.-clientX me)
@@ -273,24 +265,26 @@
                                 mt (js/Date.now)
                                 {:keys [last-x last-y last-t]} @!drag-state
                                 dt (max 1 (- mt (or last-t mt)))
-                                vx (/ (- mx (or last-x mx)) dt)
-                                vy (/ (- my (or last-y my)) dt)]
-                            (reset! !drag-state {:last-x mx :last-y my :last-t mt})
-                            (swap! !env assoc :drag {:active? true :x mx :y my
-                                                     :vx (* vx 8) :vy (* vy 8)}))))
+                                vx (* (/ (- mx (or last-x mx)) dt) 8)
+                                vy (* (/ (- my (or last-y my)) dt) 8)]
+                            (reset! !drag-state {:last-x mx :last-y my :last-t mt
+                                                 :vx vx :vy vy})
+                            (dispatch-fn [[:buddy/ax.env-merge
+                                           :drag {:active? true :x mx :y my
+                                                  :vx vx :vy vy}]]))))
                 (reset! up-handler
                         (fn [_ue]
-                          (let [{:keys [vx vy]} (:drag @!env)]
-                            (swap! !env assoc :drag {:active? false :x nil :y nil :vx 0 :vy 0})
+                          (let [{:keys [vx vy]} @!drag-state]
                             (.removeEventListener js/document "mousemove" @move-handler)
                             (.removeEventListener js/document "mouseup" @up-handler)
-                            (dispatch-fn [[:buddy/ax.drag-release vx vy]]))))
+                            (dispatch-fn [[:buddy/ax.env-merge
+                                           :drag {:active? false :x nil :y nil :vx 0 :vy 0}]
+                                          [:buddy/ax.drag-release vx vy]]))))
                 (.addEventListener js/document "mousemove" @move-handler)
                 (.addEventListener js/document "mouseup" @up-handler)))]
         (when container-node
           (.addEventListener container-node "mousedown" down-handler)
-          (swap! !env assoc :drag-handler down-handler))
-        nil)
+          {:env {:drag-handler down-handler}}))
 
       :dom/fx.remove-drag-handler
       (let [[container-node handler] args]
@@ -304,10 +298,11 @@
                       (let [now (js/Date.now)]
                         (when (> (- now @!last-move) 200)
                           (reset! !last-move now)
-                          (swap! !env assoc :mouse-x (.-clientX e) :mouse-y (.-clientY e)))))]
+                          (dispatch-fn [[:buddy/ax.env-merge
+                                         :mouse-x (.-clientX e)
+                                         :mouse-y (.-clientY e)]]))))]
         (.addEventListener js/document "mousemove" handler)
-        (swap! !env assoc :mouse-handler handler)
-        nil)
+        {:env {:mouse-handler handler}})
 
       :dom/fx.remove-mouse-tracker
       (let [[handler] args]
@@ -319,8 +314,7 @@
       (let [handler (fn [e]
                       (dispatch-fn [[:buddy/ax.react-to-click (.-clientX e) (.-clientY e)]]))]
         (.addEventListener js/document "click" handler)
-        (swap! !env assoc :click-handler handler)
-        nil)
+        {:env {:click-handler handler}})
 
       :dom/fx.remove-click-tracker
       (let [[handler] args]
@@ -330,13 +324,14 @@
 
       :dom/fx.add-scroll-tracker
       (let [!scan-timeout (atom nil)
+            !prev-y (atom 0)
             handler (fn []
                       (let [curr-y (.-scrollY js/window)
-                            prev-y (:scroll-y @!env 0)
-                            dy (js/Math.abs (- curr-y prev-y))]
-                        (swap! !env assoc :scroll-y curr-y)
-                        (when (> dy 500)
-                          (dispatch-fn [[:buddy/ax.enter-state :being-hit]]))
+                            dy (js/Math.abs (- curr-y @!prev-y))]
+                        (reset! !prev-y curr-y)
+                        (dispatch-fn
+                         (cond-> [[:buddy/ax.env-merge :scroll-y curr-y]]
+                           (> dy 500) (conj [:buddy/ax.enter-state :being-hit])))
                         (when-let [t @!scan-timeout]
                           (js/clearTimeout t))
                         (reset! !scan-timeout
@@ -344,8 +339,7 @@
                                  #(dispatch-fn [[:buddy/ax.scan-surfaces]])
                                  500))))]
         (.addEventListener js/window "scroll" handler #js {:passive true})
-        (swap! !env assoc :scroll-handler handler)
-        nil)
+        {:env {:scroll-handler handler}})
 
       :dom/fx.remove-scroll-tracker
       (let [[handler] args]
@@ -365,13 +359,8 @@
       :log/fx.log
       (do (apply js/console.log args) nil)
 
-      :env/fx.reset
-      (do (reset! !env {:mouse-x nil :mouse-y nil :scroll-y 0
-                        :drag {:active? false :x nil :y nil :vx 0 :vy 0}}) nil)
-
       :dom/fx.scan-surfaces
-      (do (swap! !env assoc :surfaces (scan-surfaces-data))
-          nil)
+      {:env {:surfaces (scan-surfaces-data)}}
 
       (do (js/console.warn "Unhandled effect:" (pr-str effect)) nil))))
 
@@ -938,8 +927,14 @@
                   [:dom/fx.remove-click-tracker (:env/click-handler uf-data)]
                   [:dom/fx.remove-scroll-tracker (:env/scroll-handler uf-data)]
                   [:dom/fx.remove-element container]
-                  [:log/fx.log "Page buddy stopped."]
-                  [:env/fx.reset]]})
+                  [:log/fx.log "Page buddy stopped."]]
+         :uf/env {:mouse-x nil :mouse-y nil :scroll-y 0
+                  :drag {:active? false :x nil :y nil :vx 0 :vy 0}
+                  :surfaces nil :drag-handler nil :mouse-handler nil
+                  :click-handler nil :scroll-handler nil}})
+
+      :buddy/ax.env-merge
+      {:uf/env (apply hash-map args)}
 
       (do (js/console.warn "Unhandled action:" (pr-str action))
           nil))))
@@ -948,14 +943,15 @@
 
 (defn make-dispatch
   "Creates a dispatch function closed over the given state and env atoms.
-   The returned function is the single access point for state."
+   The returned function is the single access point for state and env."
   [!state !env]
   (fn dispatch! [actions]
     (let [env @!env]
       (loop [remaining (seq actions)
              state @!state
              all-fxs []
-             all-dxs []]
+             all-dxs []
+             all-env []]
         (if remaining
           (let [action (first remaining)
                 result (handle-action state {:system/now (js/Date.now)
@@ -974,16 +970,21 @@
                             (:uf/db result)
                             state)
                 fxs (when (map? result) (:uf/fxs result))
-                dxs (when (map? result) (:uf/dxs result))]
+                dxs (when (map? result) (:uf/dxs result))
+                env-upd (when (map? result) (:uf/env result))]
             (recur (next remaining)
                    new-state
                    (into all-fxs fxs)
-                   (into all-dxs dxs)))
+                   (into all-dxs dxs)
+                   (cond-> all-env env-upd (conj env-upd))))
           (do
             (reset! !state state)
+            (when (seq all-env)
+              (swap! !env #(reduce merge % all-env)))
             (doseq [fx all-fxs]
               (when fx
-                (perform-effect! dispatch! !env fx)))
+                (when-let [env-upd (:env (perform-effect! dispatch! fx))]
+                  (swap! !env merge env-upd))))
             (when (seq all-dxs)
               (dispatch! all-dxs))))))))
 
