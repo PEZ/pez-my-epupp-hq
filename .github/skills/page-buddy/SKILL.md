@@ -30,8 +30,8 @@ Page buddy adapts Uniflow for direct DOM manipulation in SCI. No Replicant views
 
 | Atom | Scope | Purpose | Writer |
 |------|-------|---------|--------|
-| `!state` | `defonce` | Application state: buddy-state, position, animation, el/container refs, raf-id | Only `dispatch!` |
-| `!env` | `defonce` | Environment: mouse-x, mouse-y, scroll-y, drag data, surfaces, handler refs | Only `dispatch!` |
+| `!state` | `defonce` | Application state: `:buddy/state`, `:pos/x`, `:vel/x`, `:dom/el`, `:buddy/raf-id` | Only `dispatch!` |
+| `!env` | `defonce` | Environment: `:mouse/x`, `:mouse/y`, `:scroll/y`, `:drag/data`, `:surfaces/visible`, handler refs | Only `dispatch!` |
 
 `!state` is application truth. `!env` is an input sensor — analogous to enrichment data, not managed state. Both are written exclusively by the dispatch loop.
 
@@ -49,16 +49,16 @@ Page buddy adapts Uniflow for direct DOM manipulation in SCI. No Replicant views
 
 ```clojure
 {:system/now          (js/Date.now)
- :roll                (rand)
- :mouse/x             (:mouse-x env)
- :mouse/y             (:mouse-y env)
- :scroll/y            (:scroll-y env)
- :surfaces/visible    (:surfaces env)
- :drag/data           (:drag env)
- :env/drag-handler    (:drag-handler env)
- :env/mouse-handler   (:mouse-handler env)
- :env/click-handler   (:click-handler env)
- :env/scroll-handler  (:scroll-handler env)}
+ :rng/roll            (rand)
+ :mouse/x             (:mouse/x env)
+ :mouse/y             (:mouse/y env)
+ :scroll/y            (:scroll/y env)
+ :surfaces/visible    (:surfaces/visible env)
+ :drag/data           (:drag/data env)
+ :env/drag-handler    (:env/drag-handler env)
+ :env/mouse-handler   (:env/mouse-handler env)
+ :env/click-handler   (:env/click-handler env)
+ :env/scroll-handler  (:env/scroll-handler env)}
 ```
 
 Actions read environment data exclusively through `uf-data`. Handler refs appear in `uf-data` so `ax.stop` can pass them to cleanup effects without reading `!env`.
@@ -76,22 +76,23 @@ Actions return a map with any combination of these keys, or `nil`:
 
 ### Effect Return Contract
 
-Effects (`perform-effect!`) return `nil` or `{:env {...}}` for env deltas. The dispatch loop merges returned `:env` maps into `!env`. Effects never touch atoms directly.
+Effects (`perform-effect!`) return `nil` or `{:uf/env {...}}` for env deltas. The dispatch loop merges returned `:uf/env` maps into `!env`. Effects never touch atoms directly.
 
 ## Non-Negotiable Invariants
 
 All Uniflow invariants apply. These are the page-buddy-specific reinforcements:
 
 1. **`!state` access**: Only `dispatch!` may `deref` or `reset!` `!state`. Actions receive state as a plain map parameter.
-2. **`!env` access**: Only `dispatch!` (the `make-dispatch` loop) may read or write `!env`. Event handler callbacks dispatch `[:buddy/ax.env-merge ...]` actions. Effects return `{:env {...}}` data for the dispatch loop to merge.
-3. **Action purity**: `handle-action` receives `(state uf-data action)` → returns `{:uf/db :uf/fxs :uf/dxs :uf/env}` or `nil`. No side effects. No atom access. No `js/` calls except `js/Math` and `js/window.innerWidth`/`innerHeight` for layout geometry.
-4. **Effect isolation**: `perform-effect!` receives `[dispatch-fn effect]`. It never reads atoms. It returns `{:env {...}}` for env deltas or `nil`. Async callbacks it installs communicate via `dispatch-fn` (dispatching env-merge actions), never via atom writes.
-5. **Entry point discipline**: `start!` and `stop!` dispatch actions. The RAF callback dispatches actions. Event handlers dispatch actions. None of them read `@!state` for decisions or write to `!env` directly.
-6. **Geometry reads**: `js/window.innerWidth`, `js/window.innerHeight`, and `floor-y` are layout queries, not state. They may appear in actions (physics needs the ground plane). They are not violations.
+2. **`!env` access**: Only `dispatch!` (the `make-dispatch` loop) may read or write `!env`. Event handler callbacks dispatch `[:buddy/ax.env-merge ...]` actions. Effects return `{:uf/env {...}}` data for the dispatch loop to merge.
+3. **Namespaced keywords only**: `page_buddy.cljs` and `page_buddy_sprites.cljs` stay free of bare keywords. State keys, env keys, FSM states, animation ids, geometry keys, sprite metadata, enum values, and Rich Comment sentinels are all namespaced (`:buddy/*`, `:bs/*`, `:cfg/*`, `:dom/*`, `:geom/*`, `:pos/*`, `:vel/*`, `:mouse/*`, `:scroll/*`, `:drag/*`, `:surface/*`, `:sprite/*`, `:anim/*`, `:rng/*`, `:timing/*`, `:rcf/*`). This is both a data-model rule and a navigation invariant for Calva.
+4. **Action purity**: `handle-action` receives `(state uf-data action)` → returns `{:uf/db :uf/fxs :uf/dxs :uf/env}` or `nil`. No side effects. No atom access. No `js/` calls except `js/Math` and `js/window.innerWidth`/`innerHeight` for layout geometry.
+5. **Effect isolation**: `perform-effect!` receives `[dispatch-fn effect]`. It never reads atoms. It returns `{:uf/env {...}}` for env deltas or `nil`. Async callbacks it installs communicate via `dispatch-fn` (dispatching env-merge actions), never via atom writes.
+6. **Entry point discipline**: `start!` and `stop!` dispatch actions. The RAF callback dispatches actions. Event handlers dispatch actions. None of them read `@!state` for decisions or write to `!env` directly.
+7. **Geometry reads**: `js/window.innerWidth`, `js/window.innerHeight`, and `floor-y` are layout queries, not state. They may appear in actions (physics needs the ground plane). They are not violations.
 
 ### The One Exception
 
-`start!` reads `(:raf-id @!state)` to guard against double-start. This is the single allowed `@!state` read outside `dispatch!` — a lifecycle guard, not a decision.
+`start!` reads `(:buddy/raf-id @!state)` to guard against double-start. This is the single allowed `@!state` read outside `dispatch!` — a lifecycle guard, not a decision.
 
 ## Behavior FSM
 
@@ -115,7 +116,7 @@ being-hit ──▶ stunned ──▶ idle    (from any ground state)
 - **Ground states**: idle, walking, running, sitting, meowing, touching
 - **Airborne states**: jumping, falling
 - **Reactive states**: being-hit, stunned, landing
-- Behavior selection is in `pick-next-behavior` — uses `(:roll uf-data)` for reproducibility
+- Behavior selection is in `pick-next-behavior` — uses `(:rng/roll uf-data)` for reproducibility
 - State transitions happen via `[:buddy/ax.enter-state new-bstate]`
 
 ### Adding a New Behavior
@@ -130,12 +131,12 @@ being-hit ──▶ stunned ──▶ idle    (from any ground state)
 
 Sprites live in `page_buddy_sprites.cljs`:
 
-- `frame-size`: `{:w 48 :h 32}` — single frame dimensions in source pixels
-- `animations`: map of `{:keyword {:frames n :data "data:image/png;base64,..."}}`
+- `frame-size`: `{:sprite/w 48 :sprite/h 32}` — single frame dimensions in source pixels
+- `animations`: map of `{:anim/name {:anim/frames n :anim/data "data:image/png;base64,..."}}`
 - Sprite sheets are horizontal strips: frame 0 at left, frame N at right
-- Rendered at 3× scale (configurable via `config :scale`): 144×96px on screen
+- Rendered at 3× scale (configurable via `(:cfg/scale config)`): 144×96px on screen
 - Animation uses CSS `background-position` stepping — `anim-fxs` helper generates the effect vectors
-- Frame advance is driven by `[:buddy/ax.advance-frame]` action at `:fps` rate
+- Frame advance is driven by `[:buddy/ax.advance-frame]` action at `(:cfg/fps config)` rate
 
 ### Re-encoding sprites from source PNGs
 
@@ -174,10 +175,10 @@ Euler integration in `tick-jumping`:
 :buddy/ax.react-to-click — respond to page click
 :buddy/ax.env-merge      — merge key-value pairs into env (used by async callbacks)
 :buddy/ax.stop           — teardown (resets env via :uf/env)
-:buddy/ax.assoc          — generic state update (raf-id)
+:buddy/ax.assoc          — generic state update (`:buddy/raf-id`)
 ```
 
-All actions are namespaced `:buddy/ax.*`. Effects are namespaced by domain: `:dom/fx.*`, `:timer/fx.*`, `:log/fx.*`. Effects that register handlers return `{:env {:handler-name handler-fn}}` — no `:env/fx.*` namespace exists.
+All actions are namespaced `:buddy/ax.*`. Effects are namespaced by domain: `:dom/fx.*`, `:timer/fx.*`, `:log/fx.*`. Effects that register handlers return `{:uf/env {:env/handler-name handler-fn}}` — no `:env/fx.*` namespace exists.
 
 ## Development Workflow
 
@@ -189,22 +190,51 @@ Page buddy is developed REPL-first via the Epupp default session (`epupp`, port 
 (comment
   (start!)
   (stop!)
-  (dispatch! [[:buddy/ax.enter-state :walking]])
+  (dispatch! [[:buddy/ax.enter-state :bs/walking]])
   @!state
   @!env
-  :rcf)
+  :rcf/ok)
 ```
 
 Evaluate individual forms to test behaviors live. `@!state` and `@!env` in RCF are for interactive inspection only — they are not part of the running system's data flow.
 
 ### Test cycle
 
-1. Evaluate the file (loads all defs)
+1. Evaluate `page_buddy_sprites.cljs`, then `page_buddy.cljs` (loads all defs in dependency order)
 2. `(start!)` — spawns the buddy
 3. Test behavior by evaluating dispatch forms
 4. `(stop!)` — clean teardown
 5. Modify code → re-evaluate changed forms → repeat
 
+### Reloading the exact saved files
+
+`(require 'page-buddy :reload)` is not a reliable way to prove the live Epupp SCI session has the exact file contents currently saved on disk. When exact disk state matters, push the files through the relay nREPL directly.
+
+Rules:
+
+1. Load `page_buddy_sprites.cljs` first, then `page_buddy.cljs`.
+2. If you are in `zsh`, run `set +H` first — `!state`, `start!`, and friends will otherwise trigger history expansion.
+3. Prefer appending a tiny probe map to the evaluated text so you can discriminate namespaced-key success from stale runtime state.
+
+```bash
+cd /Users/pez/Projects/pez-my-epupp-hq
+set +H
+bb -e '
+(require (quote [babashka.nrepl-client :as nrepl]))
+(let [sprites-expr (str (slurp "live-tampers/page_buddy_sprites.cljs")
+                        "\n{:frame-size frame-size :anim-frames (get-in animations [:anim/walk :anim/frames]) :bare (get-in animations [:walk :frames])}")
+      buddy-expr (str (slurp "live-tampers/page_buddy.cljs")
+                      "\n{:cfg (:cfg/scale config) :bare (:scale config) :has-start (some? (resolve (symbol \"start!\")))}")]
+  (println :sprites (pr-str (nrepl/eval-expr {:port 3339 :expr sprites-expr})))
+  (println :buddy (pr-str (nrepl/eval-expr {:port 3339 :expr buddy-expr}))))
+'
+```
+
+Expected discriminators:
+
+- sprites probe: `:anim-frames` resolves, `:bare` is `nil`
+- buddy probe: `:cfg` resolves, `:bare` is `nil`, `:has-start` is `true`
+
 ### After code changes
 
-Page navigation destroys the SCI runtime. After reload, re-evaluate the file before `(start!)`.
+Page navigation destroys the SCI runtime. After reload, re-evaluate `page_buddy_sprites.cljs` and `page_buddy.cljs` before `(start!)`.
