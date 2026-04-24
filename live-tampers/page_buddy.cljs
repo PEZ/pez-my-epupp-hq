@@ -21,6 +21,9 @@
    :cfg/terminal-vel 12
    :cfg/jump-vy -8})
 
+(def cat-w (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config)))
+(def cat-h (* (:sprite/h page-buddy-sprites/frame-size) (:cfg/scale config)))
+
 ;; -- Helpers --
 
 (def energy-rates
@@ -60,13 +63,11 @@
   "Scan DOM for viable perching surfaces. Returns vector of surface maps."
   []
   (let [vw js/window.innerWidth
-        vh js/window.innerHeight
-        cat-w (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config))]
+        vh js/window.innerHeight]
     (->> (js/document.querySelectorAll
           "nav, header, aside, section, article, div, img, table, footer, main")
          (keep (fn [el]
-                 (when (and (not= (.-id el) "page-buddy-container")
-                            (not= (.-id el) "page-buddy")
+                 (when (and (not (.contains (.-classList el) "page-buddy-element"))
                             (.-isConnected el))
                    (let [rect (.getBoundingClientRect el)
                          w (.-width rect)
@@ -95,9 +96,7 @@
 (defn find-landing-surface
   "Check if cat's feet crossed through a surface top edge during fall."
   [surfaces cat-x cat-y cat-prev-y]
-  (let [cat-w (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config))
-        cat-h (* (:sprite/h page-buddy-sprites/frame-size) (:cfg/scale config))
-        cat-right (+ cat-x cat-w)
+  (let [cat-right (+ cat-x cat-w)
         cat-bottom (+ cat-y cat-h)
         cat-prev-bottom (+ cat-prev-y cat-h)]
     (when (> cat-y cat-prev-y)
@@ -113,8 +112,7 @@
 (defn find-perch-target
   "Find best surface to jump onto from current position."
   [surfaces cat-x cat-y]
-  (let [cat-w (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config))
-        cat-center-x (+ cat-x (/ cat-w 2))
+  (let [cat-center-x (+ cat-x (/ cat-w 2))
         max-jump-height 200
         max-horiz-dist 300]
     (->> surfaces
@@ -137,8 +135,6 @@
   "Compute vx/vy to jump from (cat-x, cat-y) to land on surface top edge."
   [cat-x cat-y surface]
   (let [{:geom/keys [top left right]} surface
-        cat-w (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config))
-        cat-h (* (:sprite/h page-buddy-sprites/frame-size) (:cfg/scale config))
         target-x (max (+ left 10) (min (- right cat-w 10) cat-x))
         dx (- target-x cat-x)
         target-y (- top cat-h)
@@ -172,9 +168,36 @@
             :surface/valid))))))
 
 (defn floor-y []
-  (- js/window.innerHeight 40 (* (:sprite/h page-buddy-sprites/frame-size) (:cfg/scale config))))
+  (- js/window.innerHeight 40 cat-h))
 
 ;; -- Effects (imperative shell — DOM side effects only, no atom writes) --
+
+(defn derive-viewport-pos
+  "Derive viewport [x y] from surface offset + live rect. Returns nil if element disconnected."
+  [state]
+  (when-let [el (get-in state [:buddy/current-surface :dom/el])]
+    (when (.-isConnected el)
+      (let [rect (.getBoundingClientRect el)
+            offset-x (:surface/offset-x state)]
+        [(+ (.-left rect) offset-x)
+         (- (.-top rect) cat-h)]))))
+
+(defn offset-from-viewport
+  "Convert viewport x to surface-relative offset."
+  [viewport-x el]
+  (let [rect (.getBoundingClientRect el)]
+    (- viewport-x (.-left rect))))
+
+(defn surface-walk-bounds
+  "Offset bounds [min max] for walking on a surface element."
+  [el]
+  (let [rect (.getBoundingClientRect el)]
+    [0 (- (.-width rect) cat-w)]))
+
+(defn on-surface?
+  "True when cat is in surface-relative positioning mode."
+  [state]
+  (some? (:surface/offset-x state)))
 
 (defn perform-effect!
   "Execute a side effect. Returns {:uf/env {...}} for env updates, or nil."
@@ -185,7 +208,9 @@
       (let [container (js/document.createElement "div")
             el (js/document.createElement "div")]
         (set! (.-id container) "page-buddy-container")
+        (.add (.-classList container) "page-buddy-element")
         (set! (.-id el) "page-buddy")
+        (.add (.-classList el) "page-buddy-element")
         (.appendChild container el)
         (js/document.body.appendChild container)
         {:dom/container container :dom/el el})
@@ -437,7 +462,7 @@
   [state uf-data]
   (let [mouse-x (:mouse/x uf-data)]
     (when (and mouse-x (:pos/x state) (:dom/el state))
-      (let [cat-center-x (+ (:pos/x state) (/ (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config)) 2))
+      (let [cat-center-x (+ (:pos/x state) (/ cat-w 2))
             should-face (if (< mouse-x cat-center-x) :facing/left :facing/right)]
         (when (not= should-face (:buddy/facing state))
           {:uf/db (assoc state :buddy/facing should-face)
@@ -537,7 +562,9 @@
       {:uf/db base-db
        :uf/fxs (anim-fxs el :anim/walk)}
 
-      nil)))
+      (do (js/console.warn "Unknown state:" (pr-str new-bstate))
+          {:uf/db base-db
+           :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}))))
 
 (defn tick-walking
   "Pure walking tick logic, surface-bounded when on element."
@@ -548,7 +575,6 @@
         speed (if (= current-anim :anim/run) (:cfg/run-speed config) (:cfg/walk-speed config))
         dx (if (= facing :facing/left) (- speed) speed)
         new-x (+ x dx)
-        cat-w (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config))
         [min-bound max-bound]
         (if current-surface
           (let [rect (.getBoundingClientRect (:dom/el current-surface))]
@@ -587,16 +613,17 @@
         gravity (:cfg/gravity config)
         terminal-vel (:cfg/terminal-vel config)
         new-vy (min (+ vy gravity) terminal-vel)
+        vx (* vx 0.95)
         new-x (+ x vx)
         new-y (+ y new-vy)
-        max-x (- js/window.innerWidth (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config)))
+        max-x (- js/window.innerWidth cat-w)
         fy (floor-y)
         clamped-x (max 0 (min new-x max-x))
         surfaces (:surfaces/visible uf-data)
         landing-surface (when (and surfaces (> new-vy 0))
                           (find-landing-surface surfaces clamped-x new-y y))]
     (if landing-surface
-      (let [surface-y (- (:geom/top landing-surface) (* (:sprite/h page-buddy-sprites/frame-size) (:cfg/scale config)))
+      (let [surface-y (- (:geom/top landing-surface) cat-h)
             land-state (if (> new-vy 6) :bs/stunned :bs/idle)]
         {:uf/db (assoc state
                        :pos/x clamped-x :pos/y surface-y
@@ -638,7 +665,7 @@
       {:uf/db state
        :uf/dxs [[:buddy/ax.enter-state (pick-next-behavior (or (:buddy/energy state) 0.8) (:rng/roll uf-data))]]}
       (if (and mouse-x mouse-y (> mouse-still-time 2000))
-        (let [cat-center-x (+ (:pos/x state) (/ (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config)) 2))
+        (let [cat-center-x (+ (:pos/x state) (/ cat-w 2))
               dx (- mouse-x cat-center-x)
               dy (- mouse-y (:pos/y state))
               dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))]
@@ -659,8 +686,7 @@
          :buddy/keys [facing]} state
         target (when surfaces (find-perch-target surfaces x y))]
     (if target
-      (let [cat-w (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config))
-            cat-center-x (+ x (/ cat-w 2))
+      (let [cat-center-x (+ x (/ cat-w 2))
             target-center-x (+ (:geom/left target) (/ (:geom/width target) 2))
             dx (- target-center-x cat-center-x)
             dist (js/Math.abs dx)
@@ -706,8 +732,7 @@
   [state uf-data]
   (let [now (:system/now uf-data)
         drag (:drag/data uf-data)
-        container (:dom/container state)
-        cat-h (* (:sprite/h page-buddy-sprites/frame-size) (:cfg/scale config))]
+        container (:dom/container state)]
     (when (:drag/active? drag)
       (let [dx (- (:pos/x drag) (:pos/x state))
             new-x (:pos/x drag)
@@ -736,7 +761,6 @@
         {:pos/keys [x y]
          :dom/keys [container el]
          :buddy/keys [facing]} state
-        cat-w (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config))
         cat-center-x (+ x (/ cat-w 2))]
     (if (nil? mouse-x)
       {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
@@ -778,7 +802,8 @@
                     :buddy/current-anim nil
                     :pos/x init-x
                     :pos/y init-y
-                    :buddy/energy 0.8})
+                    :buddy/energy 0.8
+                    :surface/offset-x nil})
      :uf/fxs [[:dom/fx.inject-css (make-sprite-css)]
               [:dom/fx.set-transform (:dom/container dom-refs) init-x init-y]
               [:dom/fx.add-click-handler (:dom/el dom-refs)]
@@ -795,9 +820,9 @@
   (let [{:pos/keys [x y]
          :dom/keys [el]} state
         buddy-state (:buddy/state state)
-        cat-center-x (+ x (/ (* (:sprite/w page-buddy-sprites/frame-size) (:cfg/scale config)) 2))
+        cat-center-x (+ x (/ cat-w 2))
         dx (- click-x cat-center-x)
-        dy (- click-y (+ y (/ (* (:sprite/h page-buddy-sprites/frame-size) (:cfg/scale config)) 2)))
+        dy (- click-y (+ y (/ cat-h 2)))
         dist (js/Math.sqrt (+ (* dx dx) (* dy dy)))
         ground-state? (contains? #{:bs/idle :bs/walking :bs/running :bs/sitting :bs/meowing :bs/touching :bs/perching :bs/edge-contemplating} buddy-state)]
     (when ground-state?
