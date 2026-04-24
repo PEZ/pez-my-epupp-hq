@@ -172,7 +172,8 @@
          first)))
 
 (defn find-wall-surface
-  "Find nearest wall surface within reach of cat. Returns {:surface/map ... :surface/side ...} or nil."
+  "Find nearest wall surface within reach of cat. Returns {:surface/map ... :surface/side ...} or nil.
+   Only matches the wall face the cat is actually approaching (left of element → left-wall, right → right-wall)."
   [surfaces cat-x cat-y max-dist]
   (let [cat-center-x (+ cat-x (/ cat-w 2))
         cat-center-y (+ cat-y (/ cat-h 2))]
@@ -181,19 +182,23 @@
                  (when faces
                    (let [results
                          (cond-> []
+                           ;; Cat is to the left of element → can climb left wall face
                            (and (contains? faces :surface/left-wall)
-                                (< (js/Math.abs (- left cat-center-x)) max-dist)
+                                (<= cat-center-x left)
+                                (< (- left cat-center-x) max-dist)
                                 (> cat-center-y top)
                                 (< cat-center-y bottom))
                            (conj {:surface/map surface :surface/side :surface/left-wall
-                                  :surface/dist (js/Math.abs (- left cat-center-x))})
+                                  :surface/dist (- left cat-center-x)})
 
+                           ;; Cat is to the right of element → can climb right wall face
                            (and (contains? faces :surface/right-wall)
-                                (< (js/Math.abs (- right cat-center-x)) max-dist)
+                                (>= cat-center-x right)
+                                (< (- cat-center-x right) max-dist)
                                 (> cat-center-y top)
                                 (< cat-center-y bottom))
                            (conj {:surface/map surface :surface/side :surface/right-wall
-                                  :surface/dist (js/Math.abs (- right cat-center-x))}))]
+                                  :surface/dist (- cat-center-x right)}))]
                      (seq results)))))
          (apply concat)
          (sort-by :surface/dist)
