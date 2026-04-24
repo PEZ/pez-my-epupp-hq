@@ -78,12 +78,11 @@
                          right (.-right rect)]
                      (when (and (> w cat-w)
                                 (> h 20)
-                                (< top vh)
+                                (< top (+ vh 300))
                                 (> bottom 0)
                                 (< left vw)
                                 (> right 0)
-                                (> top 50)
-                                (< top (- vh 100)))
+                                (> top 50))
                        {:dom/el el
                         :geom/top top
                         :geom/left left
@@ -108,6 +107,33 @@
                       (> cat-right left)
                       (> width cat-w)))
                surfaces)))))
+
+(defn find-floor-pickup-surface
+  "Check if a surface has risen to meet the cat's feet while on the floor.
+   Uses live getBoundingClientRect for current positions."
+  [surfaces cat-x cat-y]
+  (let [cat-right (+ cat-x cat-w)
+        cat-bottom (+ cat-y cat-h)
+        pickup-threshold 40]
+    (->> surfaces
+         (keep (fn [{el :dom/el}]
+                 (when (.-isConnected el)
+                   (let [rect (.getBoundingClientRect el)
+                         top (.-top rect)
+                         left (.-left rect)
+                         right (.-right rect)
+                         width (.-width rect)]
+                     (when (and (> width cat-w)
+                                (<= top cat-bottom)
+                                (> top (- cat-bottom pickup-threshold))
+                                (< cat-x right)
+                                (> cat-right left))
+                       {:dom/el el
+                        :geom/top top
+                        :geom/left left
+                        :geom/right right})))))
+         first)))
+
 
 (defn find-perch-target
   "Find best surface to jump onto from current position."
@@ -930,12 +956,38 @@
             frame-db (if (and el (pos? frame-count))
                        (assoc state :buddy/frame (mod (inc frame) frame-count))
                        state)
-            [pos-fxs pos-db] (if (and (:buddy/current-surface frame-db) (:surface/offset-x frame-db))
-                               (if-let [[vx vy] (derive-viewport-pos frame-db)]
-                                 [(position-fxs container vx vy)
-                                  (assoc frame-db :pos/x vx :pos/y vy)]
-                                 [nil frame-db])
-                               [nil frame-db])]
+            [pos-fxs pos-db]
+            (if (and (:buddy/current-surface frame-db) (:surface/offset-x frame-db))
+              (if-let [[vx vy] (derive-viewport-pos frame-db)]
+                [(position-fxs container vx vy)
+                 (assoc frame-db :pos/x vx :pos/y vy)]
+                [nil frame-db])
+              ;; Floor pickup: check if scrolling surface scooped cat
+              (let [scroll-y (:scroll/y uf-data)
+                    prev-check-y (:scroll/pickup-check-y frame-db)
+                    scrolling? (and scroll-y (not= scroll-y prev-check-y))
+                    buddy-state (:buddy/state frame-db)]
+                (if (and scrolling?
+                         (not (#{:bs/jumping :bs/falling :bs/dragging
+                                 :bs/being-hit :bs/cursor-chasing} buddy-state))
+                         (>= (:pos/y frame-db) (- (floor-y) 5)))
+                  (let [surfaces (:surfaces/visible uf-data)
+                        pickup (when surfaces
+                                 (find-floor-pickup-surface surfaces
+                                   (:pos/x frame-db) (:pos/y frame-db)))]
+                    (if pickup
+                      (let [pickup-el (:dom/el pickup)
+                            rect (.getBoundingClientRect pickup-el)
+                            offset-x (- (:pos/x frame-db) (.-left rect))
+                            surface-y (- (.-top rect) cat-h)]
+                        [(position-fxs container (:pos/x frame-db) surface-y)
+                         (assoc frame-db
+                                :buddy/current-surface {:dom/el pickup-el}
+                                :surface/offset-x offset-x
+                                :pos/y surface-y
+                                :scroll/pickup-check-y scroll-y)])
+                      [nil (assoc frame-db :scroll/pickup-check-y scroll-y)]))
+                  [nil frame-db])))]
         {:uf/db pos-db
          :uf/fxs (into (or sprite-fxs []) pos-fxs)})
 
