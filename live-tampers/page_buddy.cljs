@@ -914,9 +914,14 @@
         (if (< dist 50)
           (let [jump-params (compute-jump-to-surface x y target)]
             (if jump-params
-              {:uf/db (assoc state :vel/x (:vel/x jump-params) :vel/y (:vel/y jump-params)
-                             :buddy/state :bs/jumping)
-               :uf/fxs (anim-fxs el :anim/jump)}
+              (let [energy (or (:buddy/energy state) 0.5)
+                    fail-chance (if (< energy 0.3) 0.35 0.15)
+                    scale (if (< (rand) fail-chance) 0.7 1.0)]
+                {:uf/db (assoc state
+                               :vel/x (* (:vel/x jump-params) scale)
+                               :vel/y (* (:vel/y jump-params) scale)
+                               :buddy/state :bs/jumping)
+                 :uf/fxs (anim-fxs el :anim/jump)})
               {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]}))
           (let [speed (:cfg/walk-speed config)
                 step (if (= walk-facing :facing/right) speed (- speed))
