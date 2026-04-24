@@ -571,32 +571,46 @@
   [state now]
   (let [{:pos/keys [x y]
          :dom/keys [container el]
-         :buddy/keys [facing current-anim state-end current-surface]} state
+         :buddy/keys [facing current-anim state-end current-surface]
+         :surface/keys [offset-x]} state
         speed (if (= current-anim :anim/run) (:cfg/run-speed config) (:cfg/walk-speed config))
         dx (if (= facing :facing/left) (- speed) speed)
-        new-x (+ x dx)
-        [min-bound max-bound]
+        move-result
         (if current-surface
-          (let [rect (.getBoundingClientRect (:dom/el current-surface))]
-            [(.-left rect) (- (.-right rect) cat-w)])
-          [0 (- js/window.innerWidth cat-w)])
-        edge-state (if current-surface :bs/edge-contemplating :bs/idle)
-        move-result (cond
-                      (< new-x min-bound)
-                      {:uf/db (assoc state :pos/x min-bound :buddy/facing :facing/right)
-                       :uf/fxs (into (position-fxs container min-bound y)
-                                     (facing-fxs el :facing/right))
-                       :uf/dxs [[:buddy/ax.enter-state edge-state]]}
+          (let [surf-el (:dom/el current-surface)
+                [min-off max-off] (surface-walk-bounds surf-el)
+                new-offset (+ (or offset-x 0) dx)]
+            (cond
+              (< new-offset min-off)
+              {:uf/db (assoc state :surface/offset-x min-off :buddy/facing :facing/right)
+               :uf/fxs (facing-fxs el :facing/right)
+               :uf/dxs [[:buddy/ax.enter-state :bs/edge-contemplating]]}
 
-                      (> new-x max-bound)
-                      {:uf/db (assoc state :pos/x max-bound :buddy/facing :facing/left)
-                       :uf/fxs (into (position-fxs container max-bound y)
-                                     (facing-fxs el :facing/left))
-                       :uf/dxs [[:buddy/ax.enter-state edge-state]]}
+              (> new-offset max-off)
+              {:uf/db (assoc state :surface/offset-x max-off :buddy/facing :facing/left)
+               :uf/fxs (facing-fxs el :facing/left)
+               :uf/dxs [[:buddy/ax.enter-state :bs/edge-contemplating]]}
 
-                      :else
-                      {:uf/db (assoc state :pos/x new-x)
-                       :uf/fxs (position-fxs container new-x y)})]
+              :else
+              {:uf/db (assoc state :surface/offset-x new-offset)}))
+          (let [new-x (+ x dx)
+                max-bound (- js/window.innerWidth cat-w)]
+            (cond
+              (< new-x 0)
+              {:uf/db (assoc state :pos/x 0 :buddy/facing :facing/right)
+               :uf/fxs (into (position-fxs container 0 y)
+                             (facing-fxs el :facing/right))
+               :uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
+
+              (> new-x max-bound)
+              {:uf/db (assoc state :pos/x max-bound :buddy/facing :facing/left)
+               :uf/fxs (into (position-fxs container max-bound y)
+                             (facing-fxs el :facing/left))
+               :uf/dxs [[:buddy/ax.enter-state :bs/idle]]}
+
+              :else
+              {:uf/db (assoc state :pos/x new-x)
+               :uf/fxs (position-fxs container new-x y)})))]
     (if (and state-end (> now state-end))
       (update move-result :uf/dxs (fnil conj []) [:buddy/ax.enter-state :bs/idle])
       move-result)))
@@ -623,12 +637,16 @@
         landing-surface (when (and surfaces (> new-vy 0))
                           (find-landing-surface surfaces clamped-x new-y y))]
     (if landing-surface
-      (let [surface-y (- (:geom/top landing-surface) cat-h)
+      (let [landing-el (:dom/el landing-surface)
+            rect (.getBoundingClientRect landing-el)
+            surface-y (- (.-top rect) cat-h)
+            offset-x (- clamped-x (.-left rect))
             land-state (if (> new-vy 6) :bs/stunned :bs/idle)]
         {:uf/db (assoc state
                        :pos/x clamped-x :pos/y surface-y
                        :vel/x 0 :vel/y 0
-                       :buddy/current-surface landing-surface)
+                       :buddy/current-surface {:dom/el landing-el}
+                       :surface/offset-x offset-x)
          :uf/fxs (position-fxs container clamped-x surface-y)
          :uf/dxs [[:buddy/ax.enter-state land-state]]})
       (if (>= new-y fy)
@@ -920,6 +938,11 @@
 
       :buddy/ax.tick
       (let [state (assoc state :buddy/energy (update-energy (or (:buddy/energy state) 0.8) (:buddy/state state)))
+            state (if (and (:buddy/current-surface state) (:surface/offset-x state))
+                    (if-let [[vx vy] (derive-viewport-pos state)]
+                      (assoc state :pos/x vx :pos/y vy)
+                      state)
+                    state)
             buddy-state (:buddy/state state)
             state-end (:buddy/state-end state)
             state-timer (:buddy/state-timer state)
@@ -946,10 +969,17 @@
                   :bs/edge-contemplating (tick-edge-contemplating state uf-data)
                   :bs/dragging (tick-dragging state uf-data)
                   :bs/cursor-chasing (tick-cursor-chasing state uf-data)
-                  nil)))]
-        (if behavior-result
-          (update behavior-result :uf/db #(or % state))
-          {:uf/db state}))
+                  nil)))
+            result (if behavior-result
+                     (update behavior-result :uf/db #(or % state))
+                     {:uf/db state})
+            result-state (:uf/db result)]
+        (if (and (:buddy/current-surface result-state) (:surface/offset-x result-state))
+          (if-let [[vx vy] (derive-viewport-pos result-state)]
+            (update result :uf/fxs (fnil into [])
+                    (position-fxs (:dom/container result-state) vx vy))
+            result)
+          result))
 
       :buddy/ax.scan-surfaces
       {:uf/fxs [[:dom/fx.scan-surfaces]]}
