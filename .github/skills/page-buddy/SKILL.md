@@ -89,6 +89,9 @@ All Uniflow invariants apply. These are the page-buddy-specific reinforcements:
 5. **Effect isolation**: `perform-effect!` receives `[dispatch-fn effect]`. It never reads atoms. It returns `{:uf/env {...}}` for env deltas or `nil`. Async callbacks it installs communicate via `dispatch-fn` (dispatching env-merge actions), never via atom writes.
 6. **Entry point discipline**: `start!` and `stop!` dispatch actions. The RAF callback dispatches actions. Event handlers dispatch actions. None of them read `@!state` for decisions or write to `!env` directly.
 7. **Geometry reads**: `js/window.innerWidth`, `js/window.innerHeight`, and `floor-y` are layout queries, not state. They may appear in actions (physics needs the ground plane). They are not violations.
+8. **Functional over imperative**: Prefer `keep`/`mapv`/`filterv`/`reduce` over `atom` + `swap!` + `.forEach` for local accumulation. The global `!state`/`!env` atoms are Uniflow architecture — those stay. But local mutable accumulators (`(let [results (atom [])] ... (swap! results conj ...) ... @results)`) are replaced with functional sequence operations.
+9. **Threading macros**: Use `->>` (and `->`) to express data pipelines. Thread collections through transformations rather than nesting calls like `(vec (keep ... (querySelectorAll ...)))`.
+10. **SCI iterability**: SCI's sequence functions (`keep`, `map`, `filter`, etc.) work directly on browser `NodeList` objects — no `array-seq` conversion needed.
 
 ### The One Exception
 
