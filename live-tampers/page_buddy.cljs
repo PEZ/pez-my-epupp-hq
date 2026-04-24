@@ -564,7 +564,8 @@
                   :bs/jumping  (* 0.10 active-bias)
                   :bs/running  (* 0.20 active-bias)
                   :bs/perching (* 0.15 active-bias)
-                  :bs/walking  (* 0.30 active-bias)}
+                  :bs/climbing (* 0.12 active-bias)
+                  :bs/walking  (* 0.25 active-bias)}
          filtered (if valid-set
                     (select-keys weights (filterv valid-set (keys weights)))
                     weights)
@@ -578,6 +579,7 @@
                    (when (< roll cum) (nth ordered i)))
                  cumulative))
          (first ordered)))))
+
 
 ;; -- Actions (pure: state + uf-data + action → result) --
 
@@ -638,7 +640,8 @@
          :uf/fxs (anim-fxs el :anim/jump)})
 
       :bs/falling
-      {:uf/db (assoc base-db :vel/x 0 :vel/y 0)
+      {:uf/db (assoc base-db :vel/x 0 :vel/y 0
+                     :buddy/climb-direction nil :buddy/climb-goal nil)
        :uf/fxs (anim-fxs el :anim/jump)}
 
       :bs/landing
@@ -647,7 +650,8 @@
 
       :bs/being-hit
       {:uf/db (assoc base-db :buddy/state-end (+ now 400)
-                     :buddy/current-surface nil :surface/offset-x nil)
+                     :buddy/current-surface nil :surface/offset-x nil
+                     :buddy/climb-direction nil :buddy/climb-goal nil)
        :uf/fxs (anim-fxs el :anim/being-hit)}
 
       :bs/stunned
@@ -692,7 +696,8 @@
                        (orientation-fxs el (:buddy/facing state) surface-type))})
 
       :bs/dragging
-      {:uf/db (assoc base-db :buddy/current-surface nil :surface/offset-x nil)
+      {:uf/db (assoc base-db :buddy/current-surface nil :surface/offset-x nil
+                     :buddy/climb-direction nil :buddy/climb-goal nil)
        :uf/fxs (anim-fxs el :anim/being-hit)}
 
       :bs/cursor-chasing
@@ -803,6 +808,29 @@
         {:uf/db (assoc state :pos/x clamped-x :pos/y new-y :vel/x vx :vel/y new-vy)
          :uf/fxs (position-fxs container clamped-x new-y)}))))
 
+(defn attempt-wall-climb
+  "Try to initiate wall climbing. Returns action map or nil.
+   Called from idle/walking when near a wall."
+  [state uf-data]
+  (let [surfaces (:surfaces/visible uf-data)
+        {:pos/keys [x y]
+         :buddy/keys [energy]} state]
+    (when (and surfaces (not (:buddy/current-surface state)))
+      (when-let [{:surface/keys [map side]} (find-wall-surface surfaces x y 100)]
+        (let [surf-el (:dom/el map)
+              rect (.getBoundingClientRect surf-el)
+              wall-facing (if (= side :surface/left-wall) :facing/right :facing/left)
+              offset-y (- (+ y cat-h) (.-top rect))
+              climb-goal (when (and energy (< energy 0.6) (> energy 0.3))
+                           (* (.-height rect) (+ 0.3 (* 0.3 (rand)))))]
+          {:uf/db (assoc state
+                         :buddy/current-surface {:dom/el surf-el}
+                         :surface/offset-x (max 0 offset-y)
+                         :buddy/climb-direction :climb/up
+                         :buddy/facing wall-facing
+                         :buddy/climb-goal climb-goal)
+           :uf/dxs [[:buddy/ax.enter-state :bs/climbing]]})))))
+
 (defn tick-idle
   "Tick handler for idle state — check timeout, cursor chase opportunity, mouse facing."
   [state uf-data]
@@ -822,8 +850,13 @@
                      :buddy/last-mouse-y mouse-y
                      :buddy/mouse-still-since still-since)]
     (if (and state-end (> now state-end))
-      {:uf/db state
-       :uf/dxs [[:buddy/ax.enter-state (pick-next-behavior (or (:buddy/energy state) 0.8) (:rng/roll uf-data))]]}
+      (let [next-beh (pick-next-behavior (or (:buddy/energy state) 0.8) (:rng/roll uf-data))]
+        (if (= next-beh :bs/climbing)
+          (or (attempt-wall-climb state uf-data)
+              {:uf/db state
+               :uf/dxs [[:buddy/ax.enter-state :bs/walking]]})
+          {:uf/db state
+           :uf/dxs [[:buddy/ax.enter-state next-beh]]}))
       (if (and mouse-x mouse-y (> mouse-still-time 2000))
         (let [cat-center-x (+ (:pos/x state) (/ cat-w 2))
               dx (- mouse-x cat-center-x)
@@ -836,6 +869,7 @@
                 {:uf/db state})))
         (or (mouse-facing-fxs state uf-data)
             {:uf/db state})))))
+
 
 (defn tick-perching
   "Tick handler for perching — walk toward surface target and jump onto it."
@@ -968,23 +1002,46 @@
        :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}
       {:uf/db (assoc state :surface/offset-x new-offset)})))
 
+
+
 (defn tick-edge-contemplating
-  "Tick handler for edge contemplation — decide to jump off or turn around."
+  "Tick handler for edge contemplation — jump off, turn around, or climb down."
   [state uf-data]
   (let [now (:system/now uf-data)
-        {:buddy/keys [state-end facing]
+        {:buddy/keys [state-end facing current-surface]
          :dom/keys [el]} state]
     (when (and state-end (> now state-end))
-      (let [jump-off? (< (rand) 0.4)]
-        (if jump-off?
+      (let [roll (rand)
+            can-climb-down? (when current-surface
+                              (let [surf-el (:dom/el current-surface)
+                                    rect (.getBoundingClientRect surf-el)]
+                                (> (.-height rect) 200)))]
+        (cond
+          ;; 15% chance: climb down the element side
+          (and can-climb-down? (< roll 0.15))
+          (let [side (if (= facing :facing/left) :surface/left-wall :surface/right-wall)
+                wall-facing (if (= side :surface/left-wall) :facing/right :facing/left)]
+            {:uf/db (assoc state
+                           :buddy/climb-direction :climb/down
+                           :buddy/facing wall-facing
+                           :surface/offset-x 0)
+             :uf/dxs [[:buddy/ax.enter-state :bs/climbing]]})
+
+          ;; 40% chance: jump off
+          (< roll 0.55)
           (let [vx (if (= facing :facing/left) -2 2)]
             {:uf/db (assoc state :vel/x vx :vel/y -2
                            :buddy/current-surface nil :surface/offset-x nil)
              :uf/dxs [[:buddy/ax.enter-state :bs/jumping]]})
+
+          ;; Otherwise: turn around and walk
+          :else
           (let [new-facing (if (= facing :facing/left) :facing/right :facing/left)]
             {:uf/db (assoc state :buddy/facing new-facing)
              :uf/fxs (orientation-fxs el new-facing)
              :uf/dxs [[:buddy/ax.enter-state :bs/walking]]}))))))
+
+
 
 (defn tick-dragging
   "Tick handler for dragging — follow drag position, handle break-free."
