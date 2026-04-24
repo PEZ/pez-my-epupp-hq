@@ -246,9 +246,19 @@
   (when-let [el (get-in state [:buddy/current-surface :dom/el])]
     (when (.-isConnected el)
       (let [rect (.getBoundingClientRect el)
-            offset-x (:surface/offset-x state)]
-        [(+ (.-left rect) offset-x)
-         (- (.-top rect) cat-h)]))))
+            offset-x (:surface/offset-x state)
+            climb-dir (:buddy/climb-direction state)]
+        (if climb-dir
+          (if (<= (:pos/x state) (.-left rect))
+            ;; Left wall
+            [(- (.-left rect) cat-h)
+             (+ (.-top rect) (or offset-x 0))]
+            ;; Right wall
+            [(.-right rect)
+             (+ (.-top rect) (or offset-x 0))])
+          ;; Floor
+          [(+ (.-left rect) (or offset-x 0))
+           (- (.-top rect) cat-h)])))))
 
 (defn surface-walk-bounds
   "Offset bounds [min max] for walking on a surface element."
@@ -637,7 +647,7 @@
 
       :bs/being-hit
       {:uf/db (assoc base-db :buddy/state-end (+ now 400)
-                    :buddy/current-surface nil :surface/offset-x nil)
+                     :buddy/current-surface nil :surface/offset-x nil)
        :uf/fxs (anim-fxs el :anim/being-hit)}
 
       :bs/stunned
@@ -676,6 +686,13 @@
       :bs/cursor-chasing
       {:uf/db (assoc base-db :buddy/current-surface nil :surface/offset-x nil)
        :uf/fxs (anim-fxs el :anim/walk)}
+
+      :bs/climbing
+      (let [climb-dir (or (:buddy/climb-direction state) :climb/up)
+            surface-type (derive-surface-type state)]
+        {:uf/db (assoc base-db :buddy/climb-direction climb-dir)
+         :uf/fxs (into (anim-fxs el :anim/climb)
+                       (orientation-fxs el (:buddy/facing state) surface-type))})
 
       (do (js/console.warn "Unknown state:" (pr-str new-bstate))
           {:uf/db base-db
@@ -840,6 +857,46 @@
              :uf/fxs (into (position-fxs container clamped-x y)
                            (or facing-update []))})))
       {:uf/dxs [[:buddy/ax.enter-state :bs/idle]]})))
+
+(defn tick-climbing
+  "Tick handler for climbing — move along wall, check bounds, handle height-goal."
+  [state _uf-data]
+  (let [{:buddy/keys [climb-direction current-surface climb-goal]
+         :surface/keys [offset-x]} state
+        climb-speed (* (:cfg/walk-speed config) (:cfg/climb-speed-ratio config))
+        dy (if (= climb-direction :climb/up) (- climb-speed) climb-speed)
+        surf-el (:dom/el current-surface)
+        rect (.getBoundingClientRect surf-el)
+        el-height (.-height rect)
+        max-offset (- el-height cat-w)
+        new-offset (+ (or offset-x 0) dy)]
+    (cond
+      ;; Reached height goal (Curious Climber)
+      (and climb-goal
+           (= climb-direction :climb/up)
+           (<= new-offset climb-goal))
+      {:uf/db (assoc state :surface/offset-x climb-goal)
+       :uf/dxs [[:buddy/ax.enter-state :bs/climb-idle]]}
+
+      ;; Hit top of element
+      (< new-offset 0)
+      {:uf/db (assoc state :surface/offset-x 0)
+       :uf/dxs [[:buddy/ax.enter-state :bs/climb-idle]]}
+
+      ;; Hit bottom of element — detach and fall
+      (> new-offset max-offset)
+      {:uf/db (assoc state
+                     :surface/offset-x nil
+                     :buddy/current-surface nil
+                     :buddy/climb-direction nil
+                     :buddy/climb-goal nil)
+       :uf/dxs [[:buddy/ax.enter-state :bs/falling]]}
+
+      ;; Normal climb tick
+      :else
+      {:uf/db (assoc state :surface/offset-x new-offset)})))
+
+
 
 (defn tick-edge-contemplating
   "Tick handler for edge contemplation — decide to jump off or turn around."
@@ -1080,7 +1137,7 @@
                   (let [surfaces (:surfaces/visible uf-data)
                         pickup (when surfaces
                                  (find-floor-pickup-surface surfaces
-                                   (:pos/x frame-db) (:pos/y frame-db)))]
+                                                            (:pos/x frame-db) (:pos/y frame-db)))]
                     (if pickup
                       (let [pickup-el (:dom/el pickup)
                             rect (.getBoundingClientRect pickup-el)
@@ -1115,6 +1172,7 @@
                   :bs/idle (tick-idle state uf-data)
                   :bs/walking (tick-walking state now)
                   :bs/running (tick-walking state now)
+                  :bs/climbing (tick-climbing state uf-data)
                   (:bs/jumping :bs/falling) (tick-jumping state uf-data)
                   :bs/sitting
                   (let [sit-frames (get-in page-buddy-sprites/animations [:anim/sit :anim/frames])
