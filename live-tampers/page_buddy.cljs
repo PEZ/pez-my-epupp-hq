@@ -595,13 +595,18 @@
 ;; -- Actions (pure: state + uf-data + action → result) --
 
 (defn mouse-facing-fxs
-  "Returns facing update map if mouse position suggests different facing, nil otherwise."
+  "Returns facing update map if mouse position suggests different facing, nil otherwise.
+   Uses a 30px deadband to prevent oscillation when mouse is near cat center."
   [state uf-data]
   (let [mouse-x (:mouse/x uf-data)]
     (when (and mouse-x (:pos/x state) (:dom/el state))
       (let [cat-center-x (+ (:pos/x state) (/ cat-w 2))
-            should-face (if (< mouse-x cat-center-x) :facing/left :facing/right)]
-        (when (not= should-face (:buddy/facing state))
+            dx (- mouse-x cat-center-x)
+            should-face (cond
+                          (> dx 30)  :facing/right
+                          (< dx -30) :facing/left
+                          :else      nil)]
+        (when (and should-face (not= should-face (:buddy/facing state)))
           {:uf/db (assoc state :buddy/facing should-face)
            :uf/fxs (orientation-fxs (:dom/el state) should-face)})))))
 
@@ -623,7 +628,9 @@
             scale (+ 0.3 (* 0.7 energy))
             [lo hi] (:cfg/walk-duration config)
             duration (rand-between (int (* lo scale)) (int (* hi scale)))
-            new-facing (if (< (:rng/roll uf-data) 0.5) :facing/left :facing/right)]
+            new-facing (if (< (:rng/roll uf-data) 0.3)
+                         (if (= (:buddy/facing state) :facing/left) :facing/right :facing/left)
+                         (:buddy/facing state))]
         {:uf/db (assoc base-db
                        :buddy/state-end (+ now duration)
                        :buddy/facing new-facing)
@@ -635,7 +642,9 @@
             scale (+ 0.3 (* 0.7 energy))
             [lo hi] (:cfg/walk-duration config)
             duration (rand-between (int (* lo scale)) (int (* hi scale)))
-            new-facing (if (< (:rng/roll uf-data) 0.5) :facing/left :facing/right)]
+            new-facing (if (< (:rng/roll uf-data) 0.3)
+                         (if (= (:buddy/facing state) :facing/left) :facing/right :facing/left)
+                         (:buddy/facing state))]
         {:uf/db (assoc base-db
                        :buddy/state-end (+ now duration)
                        :buddy/facing new-facing)
