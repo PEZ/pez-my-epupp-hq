@@ -11,23 +11,9 @@
   ],
   "calva.replConnectSequences": [
     {
-      "name": "Epupp REPL",
-      "projectType": "scittle",
-      "fallbackPort": 3339,
-      "replSessionNames": {
-        "primary": "epupp-default"
-      },
-      "replSessionFilePatterns": {
-        "primary": [
-          "userscripts/*.cljs",
-          "live-tampers/*.cljs",
-        ]
-      }
-    },
-    {
       "name": "Epupp GitLab REPL",
       "projectType": "scittle",
-      "fallbackPort": 11333,
+      "webSocketPort": 11334,
       "replSessionNames": {
         "primary": "epupp-gitlab"
       },
@@ -41,7 +27,7 @@
     {
       "name": "Epupp YouTube REPL",
       "projectType": "scittle",
-      "fallbackPort": 11335,
+      "webSocketPort": 11336,
       "replSessionNames": {
         "primary": "epupp-youtube"
       },
@@ -55,7 +41,7 @@
     {
       "name": "Epupp GitHub REPL",
       "projectType": "scittle",
-      "fallbackPort": 11331,
+      "webSocketPort": 11338,
       "replSessionNames": {
         "primary": "epupp-github"
       },
@@ -69,7 +55,7 @@
     {
       "name": "Epupp X REPL",
       "projectType": "scittle",
-      "fallbackPort": 11339,
+      "webSocketPort": 11340,
       "replSessionNames": {
         "primary": "epupp-twitter"
       },
@@ -85,7 +71,7 @@
     {
       "name": "Epupp Ebay REPL",
       "projectType": "scittle",
-      "fallbackPort": 23398,
+      "webSocketPort": 13342,
       "replSessionNames": {
         "primary": "epupp-ebay"
       },
