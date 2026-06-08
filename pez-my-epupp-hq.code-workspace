@@ -95,6 +95,9 @@
 				}
 			}
 		],
-		"chat.useAgentsMdFile": false
+		"chat.useAgentsMdFile": false,
+		"calva-backseat-driver.enableMcpReplEvaluation": true,
+		"calva-backseat-driver.autoStartMCPServer": true,
+		"calva-backseat-driver.mcpSocketServerPort": 0
 	}
 }
