@@ -21,11 +21,11 @@
 		],
 		"calva.replConnectSequences": [
 			{
-				"name": "Epupp GitLab REPL",
+				"name": "Epupp",
 				"projectType": "scittle",
-				"webSocketPort": 11334,
+				"webSocketPort": 3340,
 				"replSessionNames": {
-					"primary": "epupp-gitlab"
+					"primary": "epupp"
 				},
 				"replSessionFilePatterns": {
 					"primary": [
