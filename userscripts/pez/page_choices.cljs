@@ -7,42 +7,34 @@
 
 (ns pez.page-choices
   (:require [clojure.string :as string]
+            [clojure.walk :as walk]
             [epupp.ui :as ui]
             [replicant.dom :as r]))
 
 (def storage-key "pez.page-choices")
 (def panel-id "pez-page-choices")
+(def toolbar-id "pez-page-choices-toggle")
 
 (def ink "rgb(13, 13, 13)")
 (def paper "#ffffff")
 (def quiet "#6e6e6e")
 (def line "#ececec")
 (def page-face "-apple-system-body, ui-sans-serif, -apple-system, system-ui, \"Segoe UI\", Helvetica, Arial, sans-serif")
+
+(defonce !parse (atom (.-parse js/JSON)))
+(defonce !state (atom {:page/ready? false
+                       :page/open? false
+                       :page/experiments []
+                       :page/changes {}}))
+
 (defn close-icon
   "Codicon close mark, the same one Epupp uses."
   [& {:keys [size] :or {size 16}}]
   [:svg {:xmlns "http://www.w3.org/2000/svg"
-         :width size
-         :height size
+         :width size :height size
          :viewBox "0 0 16 16"
          :fill "currentColor"}
    [:path {:d "M8.70701 8.00001L12.353 4.35401C12.548 4.15901 12.548 3.84201 12.353 3.64701C12.158 3.45201 11.841 3.45201 11.646 3.64701L8.00001 7.29301L4.35401 3.64701C4.15901 3.45201 3.84201 3.45201 3.64701 3.64701C3.45201 3.84201 3.45201 4.15901 3.64701 4.35401L7.29301 8.00001L3.64701 11.646C3.45201 11.841 3.45201 12.158 3.64701 12.353C3.74501 12.451 3.87301 12.499 4.00101 12.499C4.12901 12.499 4.25701 12.45 4.35501 12.353L8.00101 8.70701L11.647 12.353C11.745 12.451 11.873 12.499 12.001 12.499C12.129 12.499 12.257 12.45 12.355 12.353C12.55 12.158 12.55 11.841 12.355 11.646L8.70901 8.00001H8.70701Z"}]])
-
-(defonce !parse (atom (.-parse js/JSON)))
-(defonce !state (atom {:ready? false :open? false :experiments [] :changes {}}))
-(defonce !refresh (atom (fn [])))
-
-(defn chevron
-  "Codicon chevron. :pointing is :down or :right."
-  [& {:keys [size pointing] :or {size 16 pointing :right}}]
-  [:svg {:xmlns "http://www.w3.org/2000/svg"
-         :width size
-         :height size
-         :viewBox "0 0 16 16"
-         :fill "currentColor"}
-   [:path {:d (if (= pointing :down)
-                "M3.14645 5.64645C3.34171 5.45118 3.65829 5.45118 3.85355 5.64645L8 9.79289L12.1464 5.64645C12.3417 5.45118 12.6583 5.45118 12.8536 5.64645C13.0488 5.84171 13.0488 6.15829 12.8536 6.35355L8.35355 10.8536C8.15829 11.0488 7.84171 11.0488 7.64645 10.8536L3.14645 6.35355C2.95118 6.15829 2.95118 5.84171 3.14645 5.64645Z"
-                "M5.64645 3.14645C5.45118 3.34171 5.45118 3.65829 5.64645 3.85355L9.79289 8L5.64645 12.1464C5.45118 12.3417 5.45118 12.6583 5.64645 12.8536C5.84171 13.0488 6.15829 13.0488 6.35355 12.8536L10.8536 8.35355C11.0488 8.15829 11.0488 7.84171 10.8536 7.64645L6.35355 3.14645C6.15829 2.95118 5.84171 2.95118 5.64645 3.14645Z")}]])
 
 (defn humanize
   "Turns a raw setting key into a short label."
@@ -62,23 +54,23 @@
     :else :locked))
 
 (defn with-titles
-  "Gives each decision a title, numbering later copies of a repeated label."
-  [decisions]
-  (let [counts (frequencies (map :group decisions))]
+  "Numbers later copies of a repeated experiment label."
+  [experiments]
+  (let [counts (frequencies (map :experiment/group experiments))]
     (first
-     (reduce (fn [[out seen] {:keys [group] :as decision}]
+     (reduce (fn [[out seen] {:experiment/keys [group] :as experiment}]
                (let [i (get seen group 1)]
-                 [(conj out (assoc decision :title
+                 [(conj out (assoc experiment :experiment/title
                                    (if (and (> (get counts group) 1)
                                             (> i 1))
                                      (str group " \u00b7 " i)
                                      group)))
                   (assoc seen group (inc i))]))
              [[] {}]
-             decisions))))
+             experiments))))
 
 (defn read-experiments
-  "Reads every experiment the page sent, marking the ones this visit is in."
+  "Reads every experiment the page sent."
   [statsig]
   (let [configs (.-dynamic_configs statsig)
         keys (js/Object.keys configs)]
@@ -89,89 +81,59 @@
                 (when (.-group_name obj)
                   (let [value (or (.-value obj) #js {})
                         names (js/Object.keys value)]
-                    {:id (str (.-name obj))
-                     :group (.-group_name obj)
-                     :in-effect? (boolean (and (.-is_experiment_active obj)
-                                               (.-is_user_in_experiment obj)))
-                     :settings (mapv (fn [j]
-                                       (let [param (aget names j)
-                                             site (aget value param)]
-                                         {:param param
-                                          :label (humanize param)
-                                          :kind (setting-kind site)
-                                          :site site}))
-                                     (range (.-length names)))}))))
+                    {:experiment/id (str (.-name obj))
+                     :experiment/group (.-group_name obj)
+                     :experiment/in-effect? (boolean (and (.-is_experiment_active obj)
+                                                          (.-is_user_in_experiment obj)))
+                     :experiment/settings
+                     (mapv (fn [j]
+                             (let [param (aget names j)
+                                   site (aget value param)]
+                               {:setting/param param
+                                :setting/label (humanize param)
+                                :setting/kind (setting-kind site)
+                                :setting/site site}))
+                           (range (.-length names)))}))))
             (range (.-length keys)))))))
 
 (defn read-changes
-  "Returns saved setting changes, ignoring older opt-in and opt-out marks."
+  "Returns saved setting overrides."
   []
   (if-let [raw (.getItem js/localStorage storage-key)]
     (into {}
           (keep (fn [[id params]]
                   (let [settings (into {} (remove #(string/starts-with? (key %) "__") params))]
-                    (when (seq settings)
-                      [id settings]))))
+                    (when (seq settings) [id settings]))))
           (js->clj (.call @!parse js/JSON raw)))
     {}))
 
-(defn write-changes!
-  "Saves changes. An empty map forgets them."
+(defn put-change
+  "Sets or clears one override, dropping it when it matches the site."
+  [changes id param site next-value]
+  (let [params (if (= next-value site)
+                 (dissoc (get changes id) param)
+                 (assoc (get changes id) param next-value))]
+    (if (seq params)
+      (assoc changes id params)
+      (dissoc changes id))))
+
+(defn change-count
+  "Counts saved setting overrides."
   [changes]
-  (if (empty? changes)
-    (.removeItem js/localStorage storage-key)
-    (.setItem js/localStorage storage-key (js/JSON.stringify (clj->js changes)))))
+  (reduce + 0 (map count (vals changes))))
 
-(def opt-out-key "__opt_out")
-(def opt-in-key "__opt_in")
+(defn shown-value
+  "Returns the override when there is one, otherwise the site value."
+  [changes id param site]
+  (get-in changes [id param] site))
 
-(defn opted-out?
-  "True when you have chosen to leave this experiment."
-  [changes id]
-  (true? (get-in changes [id opt-out-key])))
-
-(defn opted-in?
-  "True when you have chosen to join an experiment the page left you out of."
-  [changes id]
-  (true? (get-in changes [id opt-in-key])))
-
-(defn set-opt-out
-  "Records leaving or rejoining one experiment."
-  [changes id opt-out?]
-  (if opt-out?
-    (-> changes
-        (assoc-in [id opt-out-key] true)
-        (update id dissoc opt-in-key))
-    (let [params (dissoc (get changes id) opt-out-key)]
-      (if (seq params)
-        (assoc changes id params)
-        (dissoc changes id)))))
-
-(defn set-opt-in
-  "Records joining an experiment the page left you out of."
-  [changes id]
-  (-> (set-opt-out changes id false)
-      (assoc-in [id opt-in-key] true)))
-
-(defn opted-out?
-  "True when you have chosen to leave this experiment."
-  [changes id]
-  (true? (get-in changes [id opt-out-key])))
-
-(defn set-opt-out
-  "Records leaving or rejoining one experiment."
-  [changes id opt-out?]
-  (if opt-out?
-    (-> changes
-        (assoc-in [id opt-out-key] true)
-        (update id dissoc opt-in-key))
-    (let [params (dissoc (get changes id) opt-out-key)]
-      (if (seq params)
-        (assoc changes id params)
-        (dissoc changes id)))))
+(defn changed?
+  "True when this setting differs from what the page sent."
+  [changes id param site]
+  (not= (shown-value changes id param site) site))
 
 (defn apply-changes!
-  "Writes saved setting values into the page data ChatGPT reads."
+  "Writes saved setting values into experiment data."
   [statsig changes]
   (let [configs (.-dynamic_configs statsig)]
     (doseq [[id params] changes]
@@ -185,7 +147,7 @@
   statsig)
 
 (defn live-statsig
-  "The experiment data the running page is reading, when the page has it."
+  "The experiment data the running page is reading."
   []
   (when-let [statsig js/window.__STATSIG__]
     (let [instances (.-instances statsig)
@@ -201,7 +163,7 @@
     (.-statsigPayload (.call @!parse js/JSON (.-textContent el)))))
 
 (defn copy-assignments!
-  "Copies each experiment's inclusion and settings from one payload onto another."
+  "Copies each experiment from one payload onto another."
   [from to]
   (let [source (.-dynamic_configs from)
         target (.-dynamic_configs to)
@@ -215,18 +177,332 @@
           (set! (.-group_name dst) (.-group_name src))
           (set! (.-value dst) (js/Object.assign #js {} (.-value src))))))))
 
-(defn honor-saved!
-  "Writes saved choices into the experiment data the page is reading."
+(defn status-line
+  "How many settings differ from what the page sent."
+  [ready? experiments changes]
+  (let [n (change-count changes)]
+    (cond
+      (not ready?) "Reading the experiments on this page."
+      (zero? (count experiments)) "No experiments arrived with this page."
+      (= 1 n) "1 override."
+      :else (str n " overrides."))))
+
+(defn field-style []
+  {:font-family "inherit"
+   :font-size "14px"
+   :color ink
+   :background paper
+   :border (str "1px solid " line)
+   :border-radius "8px"
+   :padding "4px 8px"
+   :width "8rem"})
+
+(defn switch
+  "An on/off control drawn by us, so the page cannot hide it."
+  [on? label action]
+  [:button {:type "button"
+            :role "switch"
+            :aria-checked (boolean on?)
+            :aria-label label
+            :on {:click [action]}
+            :style {:width "36px" :height "22px" :padding "2px"
+                    :border "none" :border-radius "999px" :cursor "pointer"
+                    :flex-shrink "0" :display "flex" :align-items "center"
+                    :justify-content (if on? "flex-end" "flex-start")
+                    :background (if on? ink "#e3e3e3")}}
+   [:span {:style {:width "18px" :height "18px" :border-radius "999px"
+                   :background paper :display "block"}}]])
+
+(defn setting-control
+  [changes {:experiment/keys [id]} {:setting/keys [param label kind site]}]
+  (let [current (shown-value changes id param site)
+        commit [:setting/ax.commit id param site]]
+    (case kind
+      :bool (switch (boolean current) label (conj commit (not (boolean current))))
+      :text [:input {:type "text" :value (str current) :aria-label label
+                     :style (field-style)
+                     :on {:change [(conj commit :event/target.value)]}}]
+      :number [:input {:type "number" :value (str current) :aria-label label
+                       :style (field-style)
+                       :on {:change [[:setting/ax.commit-number id param site :event/target.value]]}}]
+      [:span {:style {:color quiet :font-size "13px"}} "Left as sent"])))
+
+(defn setting-row
+  [changes {:experiment/keys [id] :as experiment} {:setting/keys [param label site] :as setting}]
+  (let [edited? (changed? changes id param site)]
+    [:div {:style {:display "flex" :justify-content "space-between"
+                   :align-items "center" :gap "12px"}}
+     [:span label]
+     [:span {:style {:display "flex" :align-items "center" :gap "8px" :flex-shrink "0"}}
+      (when edited?
+        [:button {:type "button"
+                  :on {:click [[:setting/ax.commit id param site site]]}
+                  :style {:font "inherit" :font-size "12px" :color quiet
+                          :background "transparent" :border "none" :padding "0"
+                          :cursor "pointer" :text-decoration "underline"
+                          :text-underline-offset "2px"}}
+         "Reset"])
+      (setting-control changes experiment setting)]]))
+
+(defn experiment-block
+  [changes {:experiment/keys [title settings] :as experiment}]
+  [:section {:style {:display "flex" :flex-direction "column" :gap "8px"}}
+   [:h2 {:style {:margin "0" :font-family page-face :font-size "16px"
+                 :font-weight "600" :line-height "1.3" :color ink}}
+    title]
+   (when (seq settings)
+     [:div {:style {:display "flex" :flex-direction "column" :gap "8px"}}
+      (for [{:setting/keys [param] :as setting} settings]
+        ^{:key param}
+        (setting-row changes experiment setting))])])
+
+(defn text-button [label action]
+  [:button {:type "button"
+            :on {:click [action]}
+            :style {:font-family "inherit" :font-size "14px" :color ink
+                    :background "transparent" :border "none" :padding "0"
+                    :cursor "pointer" :text-decoration "underline"
+                    :text-underline-offset "3px"}}
+   label])
+
+(defn panel
+  [{:page/keys [ready? open? experiments changes]}]
+  (when open?
+    (let [experiments (with-titles experiments)]
+      [:div {:style {:position "fixed" :top "12px" :right "12px"
+                     :z-index "2147483646" :width "340px"
+                     :max-height "calc(100vh - 24px)" :overflow "auto"
+                     :box-sizing "border-box" :padding "12px 14px 16px"
+                     :background paper :color ink :font-family page-face
+                     :font-size "14px" :line-height "1.4"
+                     :border (str "1px solid " line) :border-radius "16px"
+                     :box-shadow "0 8px 28px rgba(0, 0, 0, 0.08)"}}
+       [:div {:style {:display "flex" :align-items "flex-start"
+                      :justify-content "space-between" :gap "8px"}}
+        [:div {:style {:min-width "0" :flex "1"}}
+         (ui/epupp-header :size 22 :title "Active A/B experiments" :tagline false)]
+        [:button {:type "button" :aria-label "Close"
+                  :on {:click [[:panel/ax.close]]}
+                  :style {:width "28px" :height "28px" :padding "0" :border "none"
+                          :border-radius "8px" :background "transparent" :color ink
+                          :cursor "pointer" :display "flex" :align-items "center"
+                          :justify-content "center" :flex-shrink "0"}}
+         (close-icon :size 16)]]
+       [:p {:style {:margin "12px 0 0" :color quiet}}
+        (status-line ready? experiments changes)]
+       (when (and ready? (seq experiments))
+         [:div {:style {:display "flex" :flex-direction "column" :gap "16px" :margin-top "16px"}}
+          (for [{:experiment/keys [id] :as experiment} experiments]
+            ^{:key id}
+            (experiment-block changes experiment))])
+       (when ready?
+         [:div {:style {:display "flex" :gap "16px" :margin-top "20px"}}
+          (text-button "Reload" [:page/ax.reload])
+          (when (pos? (change-count changes))
+            (text-button "Put the page's experiments back" [:page/ax.restore]))])])))
+
+(defn enrich-from-event [{:replicant/keys [js-event]} action]
+  (walk/postwalk
+   (fn [x]
+     (if (= :event/target.value x)
+       (some-> js-event .-target .-value)
+       x))
+   action))
+
+(defn enrich-action [replicant-data action]
+  (enrich-from-event replicant-data action))
+
+(defn with-render
+  "Commits state and asks the panel and toolbar to show it."
+  [db extra-fxs]
+  {:uf/db db
+   :uf/fxs (into extra-fxs [[:ui/fx.render db]
+                            [:toolbar/fx.sync (:page/open? db)]])})
+
+(defn handle-action
+  "Decides the next state and which effects should run."
+  [state _uf-data action]
+  (let [[op & args] action
+        {:page/keys [changes]} state]
+    (case op
+      :panel/ax.toggle
+      (with-render (update state :page/open? not) [])
+
+      :panel/ax.close
+      (with-render (assoc state :page/open? false) [])
+
+      :setting/ax.commit
+      (let [[id param site next-value] args
+            changes (put-change changes id param site next-value)
+            db (assoc state :page/changes changes)]
+        (with-render db [[:storage/fx.write changes]
+                         [:page/fx.honor changes]]))
+
+      :setting/ax.commit-number
+      (let [[id param site raw] args
+            parsed (js/parseFloat raw)]
+        (when-not (js/Number.isNaN parsed)
+          {:uf/dxs [[:setting/ax.commit id param site parsed]]}))
+
+      :page/ax.restore
+      (let [db (assoc state :page/changes {})]
+        (with-render db [[:storage/fx.write {}]
+                         [:page/fx.honor {}]]))
+
+      :page/ax.reload
+      {:uf/fxs [[:page/fx.reload]]}
+
+      :page/ax.boot
+      {:uf/fxs [[:page/fx.load]]
+       :uf/dxs [[:page/ax.loaded :uf/prev-result]]}
+
+      :page/ax.loaded
+      (let [[{:page/keys [experiments changes]}] args
+            db {:page/ready? true
+                :page/open? (boolean (:page/open? state))
+                :page/experiments (or experiments [])
+                :page/changes (or changes {})}]
+        (with-render db [[:page/fx.honor changes]]))
+
+      :toolbar/ax.sync
+      {:uf/fxs [[:toolbar/fx.sync (:page/open? state)]]}
+
+      :uf/unhandled-ax)))
+
+(comment "Earlier action handler, replaced by with-render.")
+
+(declare dispatch!)
+
+(defn toolbar-host
+  "The column of icons in ChatGPT's left toolbar."
   []
+  (when-let [nav (js/document.querySelector "nav")]
+    (let [buttons (.querySelectorAll nav "button")
+          parents (keep #(.-parentElement (aget buttons %))
+                         (range (.-length buttons)))
+          counts (frequencies parents)]
+      (when (seq counts)
+        (first (apply max-key val counts))))))
+
+(defn paint-toolbar! [open?]
+  (when-let [button (js/document.getElementById toolbar-id)]
+    (set! (.. button -style -background)
+          (if open? "rgba(13, 13, 13, 0.06)" "transparent"))))
+
+(defn ensure-toolbar! [open?]
+  (if-let [button (js/document.getElementById toolbar-id)]
+    (do
+      (when-let [host (toolbar-host)]
+        (when-not (identical? (.-parentElement button) host)
+          (.appendChild host button)))
+      (paint-toolbar! open?))
+    (when-let [host (toolbar-host)]
+      (let [button (js/document.createElement "button")]
+        (set! (.-id button) toolbar-id)
+        (set! (.-type button) "button")
+        (set! (.-title button) "Active A/B experiments")
+        (set! (.-ariaLabel button) "Active A/B experiments")
+        (set! (.. button -style -cssText)
+              "width:36px;height:36px;border:none;border-radius:10px;padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;color:rgb(13,13,13);")
+        (.addEventListener button "click"
+                           (fn [event]
+                             (.stopPropagation event)
+                             (dispatch! [[:panel/ax.toggle]])))
+        (.appendChild host button)
+        (r/render button (ui/epupp-icon :size 22))
+        (paint-toolbar! open?)))))
+
+(defn honor! [changes]
   (when-let [live (live-statsig)]
     (when-let [original (script-statsig)]
       (copy-assignments! original live))
-    (let [changes (read-changes)]
-      (when (seq changes)
-        (apply-changes! live changes)))))
+    (when (seq changes)
+      (apply-changes! live changes))))
+
+(defn perform-effect! [_dispatch [effect & args]]
+  (case effect
+    :ui/fx.render
+    (let [[db] args
+          root (or (js/document.getElementById panel-id)
+                   (when js/document.body
+                     (let [el (js/document.createElement "div")]
+                       (set! (.-id el) panel-id)
+                       (.appendChild js/document.body el)
+                       el)))]
+      (when root
+        (r/render root (or (panel db) [:span]))))
+
+    :toolbar/fx.sync
+    (let [[open?] args]
+      (ensure-toolbar! open?))
+
+    :storage/fx.write
+    (let [[changes] args]
+      (if (empty? changes)
+        (.removeItem js/localStorage storage-key)
+        (.setItem js/localStorage storage-key (js/JSON.stringify (clj->js changes)))))
+
+    :page/fx.honor
+    (let [[changes] args]
+      (honor! changes))
+
+    :page/fx.load
+    {:page/experiments (when-let [statsig (script-statsig)]
+                         (read-experiments statsig))
+     :page/changes (read-changes)}
+
+    :page/fx.reload
+    (js/setTimeout #(.reload js/location) 50)
+
+    :uf/unhandled-fx))
+
+(defn execute-effect! [dispatch fx]
+  (let [result (perform-effect! dispatch fx)]
+    (if (= :uf/unhandled-fx result)
+      (js/console.warn "Unhandled effect:" fx)
+      result)))
+
+(defn replace-prev-result [form prev-result]
+  (walk/postwalk (fn [x] (if (= :uf/prev-result x) prev-result x)) form))
+
+(defn execute-effects! [dispatch fxs]
+  (reduce (fn [prev fx]
+            (execute-effect! dispatch (replace-prev-result fx prev)))
+          nil
+          (remove nil? fxs)))
+
+(defn handle-actions [state uf-data actions]
+  (reduce
+   (fn [{:uf/keys [db] :as acc} action]
+     (let [result (handle-action db uf-data action)]
+       (when (= :uf/unhandled-ax result)
+         (js/console.warn "Unhandled action:" action))
+       (let [{:uf/keys [db fxs dxs]} (when (map? result) result)]
+         (cond-> acc
+           db (assoc :uf/db db)
+           (seq fxs) (update :uf/fxs into fxs)
+           (seq dxs) (update :uf/dxs into dxs)))))
+   {:uf/db state :uf/fxs [] :uf/dxs []}
+   (remove nil? actions)))
+
+(defn dispatch!
+  ([actions] (dispatch! actions nil))
+  ([actions replicant-data]
+   (let [uf-data {:uf/replicant-data replicant-data}
+         enriched (mapv #(enrich-action replicant-data %) actions)
+         {:uf/keys [db fxs dxs]} (handle-actions @!state uf-data enriched)]
+     (when (some? db)
+       (reset! !state db))
+     (let [prev (when (seq fxs)
+                  (execute-effects! dispatch! fxs))]
+       (when (seq dxs)
+         (dispatch! (mapv #(replace-prev-result % prev) dxs)))))))
+
+(defn event-handler [replicant-data actions]
+  (dispatch! actions replicant-data))
 
 (defn install-rewrite!
-  "Rewrites page data on parse, once, before ChatGPT reads it."
+  "Rewrites page data on parse, before ChatGPT reads it."
   []
   (when-not (.-__pezPageChoices js/JSON)
     (let [original (.-parse js/JSON)]
@@ -241,321 +517,6 @@
                 value)))
       (set! (.-__pezPageChoices js/JSON) true))))
 
-(defn change-count
-  "Counts saved setting changes."
-  [changes]
-  (reduce + 0 (map count (vals changes))))
-
-(defn shown-value
-  "Returns your change when you have one, otherwise the site value."
-  [changes id param site]
-  (get-in changes [id param] site))
-
-(defn changed?
-  "True when this setting differs from what the page sent."
-  [changes id param site]
-  (not= (shown-value changes id param site) site))
-
-(defn status-line
-  "One line of how many settings differ from what the page sent."
-  [ready? experiments changes]
-  (let [n (change-count changes)]
-    (cond
-      (not ready?) "Reading the experiments on this page."
-      (zero? (count experiments)) "No experiments arrived with this page."
-      (= 1 n) "1 override."
-      :else (str n " overrides."))))
-
-(defn put-change
-  "Sets or clears one saved change, dropping it when it matches the site."
-  [changes id param site next-value]
-  (let [params (if (= next-value site)
-                 (dissoc (get changes id) param)
-                 (assoc (get changes id) param next-value))
-        changes (if (seq params)
-                  (assoc changes id params)
-                  (dissoc changes id))]
-    changes))
-
-(defn remember-change!
-  "Remembers one setting and writes it into the page."
-  [id param site next-value]
-  (let [changes (put-change (:changes @!state) id param site next-value)]
-    (write-changes! changes)
-    (swap! !state assoc :changes changes)
-    (honor-saved!)
-    changes))
-
-(defn reload!
-  "Reloads after this click, so the page reads your changes."
-  []
-  (js/setTimeout #(.reload js/location) 50))
-
-(defn restore-page!
-  "Forgets every saved change and writes that into the page."
-  []
-  (write-changes! {})
-  (swap! !state assoc :changes {})
-  (honor-saved!)
-  (@!refresh))
-
-(defn field-style []
-  {:font-family "inherit"
-   :font-size "14px"
-   :color ink
-   :background paper
-   :border (str "1px solid " line)
-   :border-radius "8px"
-   :padding "4px 8px"
-   :width "8rem"})
-
-(defn switch
-  "An on/off control drawn by us, so the page cannot hide it."
-  [on? label commit]
-  [:button {:type "button"
-            :role "switch"
-            :aria-checked (boolean on?)
-            :aria-label label
-            :on {:click (fn [_] (commit (not on?)))}
-            :style {:width "36px"
-                    :height "22px"
-                    :padding "2px"
-                    :border "none"
-                    :border-radius "999px"
-                    :cursor "pointer"
-                    :flex-shrink "0"
-                    :display "flex"
-                    :align-items "center"
-                    :justify-content (if on? "flex-end" "flex-start")
-                    :background (if on? ink "#e3e3e3")}}
-   [:span {:style {:width "18px"
-                   :height "18px"
-                   :border-radius "999px"
-                   :background paper
-                   :display "block"}}]])
-
-(defn setting-control
-  "The control for one setting, or the sent value when this visit is not in it."
-  [commit editable? changes {:keys [id]} {:keys [param kind site]}]
-  (let [current (shown-value changes id param site)]
-    (if-not editable?
-      [:span {:style {:color quiet :font-size "13px"}}
-       (cond
-         (true? current) "On"
-         (false? current) "Off"
-         :else (str current))]
-      (case kind
-        :bool (switch (boolean current) (humanize param)
-                      (fn [next-value] (commit id param site next-value)))
-        :text [:input {:type "text"
-                       :value (str current)
-                       :aria-label (humanize param)
-                       :style (field-style)
-                       :on {:change (fn [event]
-                                      (commit id param site (.. event -target -value)))}}]
-        :number [:input {:type "number"
-                         :value (str current)
-                         :aria-label (humanize param)
-                         :style (field-style)
-                         :on {:change (fn [event]
-                                        (let [parsed (js/parseFloat (.. event -target -value))]
-                                          (when-not (js/Number.isNaN parsed)
-                                            (commit id param site parsed))))}}]
-        [:span {:style {:color quiet :font-size "13px"}} "Left as sent"]))))
-
-(defn setting-row
-  [commit editable? changes experiment setting]
-  (let [{:keys [id]} experiment
-        {:keys [param label site]} setting
-        edited? (and editable? (changed? changes id param site))]
-    [:div {:style {:display "flex"
-                   :justify-content "space-between"
-                   :align-items "center"
-                   :gap "12px"}}
-     [:span label]
-     [:span {:style {:display "flex" :align-items "center" :gap "8px" :flex-shrink "0"}}
-      (when edited?
-        [:button {:type "button"
-                  :on {:click (fn [_] (commit id param site site))}
-                  :style {:font "inherit"
-                          :font-size "12px"
-                          :color quiet
-                          :background "transparent"
-                          :border "none"
-                          :padding "0"
-                          :cursor "pointer"
-                          :text-decoration "underline"
-                          :text-underline-offset "2px"}}
-         "Reset"])
-      (setting-control commit editable? changes experiment setting)]]))
-
-(defn experiment-block
-  [commit changes {:keys [title settings] :as experiment}]
-  [:section {:style {:display "flex" :flex-direction "column" :gap "8px"}}
-   [:h2 {:style {:margin "0"
-                 :font-family page-face
-                 :font-size "16px"
-                 :font-weight "600"
-                 :line-height "1.3"
-                 :color ink}}
-    title]
-   (when (seq settings)
-     [:div {:style {:display "flex" :flex-direction "column" :gap "8px"}}
-      (for [setting settings]
-        ^{:key (:param setting)}
-        (setting-row commit true changes experiment setting))])])
-
-(defn text-button
-  [label action]
-  [:button {:type "button"
-            :on {:click (fn [_] (action))}
-            :style {:font-family "inherit"
-                    :font-size "14px"
-                    :color ink
-                    :background "transparent"
-                    :border "none"
-                    :padding "0"
-                    :cursor "pointer"
-                    :text-decoration "underline"
-                    :text-underline-offset "3px"}}
-   label])
-
-(defn group-open?
-  "A group is open unless the visitor has closed it. Not-in-effect starts closed."
-  [open-groups group]
-  (contains? (or open-groups #{:editable}) group))
-
-(defn disclosure
-  "A section header that opens and closes its experiments."
-  [open? title count on-toggle]
-  [:button {:type "button"
-            :aria-expanded open?
-            :on {:click (fn [_] (on-toggle))}
-            :style {:display "flex"
-                    :align-items "center"
-                    :gap "8px"
-                    :width "100%"
-                    :margin "16px 0 0"
-                    :padding "10px 0"
-                    :border "none"
-                    :border-top (str "1px solid " line)
-                    :background "transparent"
-                    :color ink
-                    :cursor "pointer"
-                    :font "inherit"
-                    :font-size "15px"
-                    :font-weight "600"
-                    :line-height "1.2"
-                    :text-align "left"}}
-   (chevron :pointing (if open? :down :right) :size 14)
-   [:span {:style {:flex "1"}} title]
-   [:span {:style {:color quiet :font-weight "500" :font-size "13px"}} (str count)]])
-
-(defn resting-experiments
-  "Experiments the page is not using, including ones you opted out of."
-  [experiments changes]
-  (let [included (filter :in-effect? experiments)
-        left (filter #(opted-out? changes (:id %)) included)
-        never-in (remove #(or (:in-effect? %)
-                              (opted-in? changes (:id %)))
-                        experiments)]
-    (with-titles (vec (concat never-in left)))))
-
-(defn panel
-  [{:keys [ready? open? experiments changes]} {:keys [commit reload restore hide]}]
-  (when open?
-    (let [experiments (with-titles experiments)]
-      [:div {:style {:position "fixed"
-                     :top "12px"
-                     :right "12px"
-                     :z-index "2147483646"
-                     :width "340px"
-                     :max-height "calc(100vh - 24px)"
-                     :overflow "auto"
-                     :box-sizing "border-box"
-                     :padding "12px 14px 16px"
-                     :background paper
-                     :color ink
-                     :font-family page-face
-                     :font-size "14px"
-                     :line-height "1.4"
-                     :border (str "1px solid " line)
-                     :border-radius "16px"
-                     :box-shadow "0 8px 28px rgba(0, 0, 0, 0.08)"}}
-       [:div {:style {:display "flex" :align-items "flex-start" :justify-content "space-between" :gap "8px"}}
-        [:div {:style {:min-width "0" :flex "1"}}
-         (ui/epupp-header :size 22 :title "Active A/B experiments" :tagline false)]
-        [:button {:type "button"
-                  :aria-label "Close"
-                  :on {:click (fn [_] (hide))}
-                  :style {:width "28px"
-                          :height "28px"
-                          :padding "0"
-                          :border "none"
-                          :border-radius "8px"
-                          :background "transparent"
-                          :color ink
-                          :cursor "pointer"
-                          :display "flex"
-                          :align-items "center"
-                          :justify-content "center"
-                          :flex-shrink "0"}}
-         (close-icon :size 16)]]
-       [:p {:style {:margin "12px 0 0" :color quiet}}
-        (status-line ready? experiments changes)]
-       (when (and ready? (seq experiments))
-         [:div {:style {:display "flex" :flex-direction "column" :gap "16px" :margin-top "16px"}}
-          (for [experiment experiments]
-            ^{:key (:id experiment)}
-            (experiment-block commit changes experiment))])
-       (when ready?
-         [:div {:style {:display "flex" :gap "16px" :margin-top "20px"}}
-          (text-button "Reload" reload)
-          (when (pos? (change-count changes))
-            (text-button "Put the page's experiments back" restore))])])))
-
-(def toolbar-id "pez-page-choices-toggle")
-
-(defn toolbar-host
-  "The column of icons in ChatGPT's left toolbar."
-  []
-  (when-let [nav (js/document.querySelector "nav")]
-    (let [buttons (.querySelectorAll nav "button")
-          parents (keep #(.-parentElement (aget buttons %))
-                         (range (.-length buttons)))
-          counts (frequencies parents)]
-      (when (seq counts)
-        (first (apply max-key val counts))))))
-
-(defn paint-toolbar! []
-  (when-let [button (js/document.getElementById toolbar-id)]
-    (set! (.. button -style -background)
-          (if (:open? @!state) "rgba(13, 13, 13, 0.06)" "transparent"))))
-
-(defn ensure-toolbar! []
-  (if-let [button (js/document.getElementById toolbar-id)]
-    (do
-      (when-let [host (toolbar-host)]
-        (when-not (identical? (.-parentElement button) host)
-          (.appendChild host button)))
-      (paint-toolbar!))
-    (when-let [host (toolbar-host)]
-      (let [button (js/document.createElement "button")]
-        (set! (.-id button) toolbar-id)
-        (set! (.-type button) "button")
-        (set! (.-title button) "Active A/B experiments")
-        (set! (.-ariaLabel button) "Active A/B experiments")
-        (set! (.. button -style -cssText)
-              "width:36px;height:36px;border:none;border-radius:10px;padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;color:rgb(13,13,13);")
-        (.addEventListener button "click"
-                           (fn [event]
-                             (.stopPropagation event)
-                             (swap! !state update :open? not)
-                             (@!refresh)))
-        (.appendChild host button)
-        (r/render button (ui/epupp-icon :size 22))
-        (paint-toolbar!)))))
-
 (defn watch-toolbar!
   "Puts the toolbar icon back whenever ChatGPT redraws the sidebar."
   []
@@ -565,90 +526,15 @@
     (let [observer (js/MutationObserver.
                     (fn [_ _]
                       (when-not (js/document.getElementById toolbar-id)
-                        (ensure-toolbar!))))]
+                        (dispatch! [[:toolbar/ax.sync]]))))]
       (.observe observer js/document.body #js {:childList true :subtree true}))))
 
-(defn render! []
-  (reset! !refresh render!)
-  (when-let [root (js/document.getElementById panel-id)]
-    (r/render root
-              (or (panel @!state
-                         {:commit (fn [id param site next-value]
-                                    (remember-change! id param site next-value)
-                                    (render!))
-                          :set-opt (fn [id leave?]
-                                     (let [experiment (first (filter #(= id (:id %)) (:experiments @!state)))
-                                           changes (if leave?
-                                                     (set-opt-out (:changes @!state) id true)
-                                                     (if (:in-effect? experiment)
-                                                       (set-opt-out (:changes @!state) id false)
-                                                       (set-opt-in (:changes @!state) id)))]
-                                       (write-changes! changes)
-                                       (swap! !state assoc :changes changes)
-                                       (honor-saved!))
-                                     (render!))
-                          :reload reload!
-                          :restore restore-page!
-                          :toggle-group (fn [group]
-                                          (swap! !state update :open-groups
-                                                 (fn [groups]
-                                                   (let [groups (or groups #{:editable})]
-                                                     (if (contains? groups group)
-                                                       (disj groups group)
-                                                       (conj groups group)))))
-                                          (render!))
-                          :hide (fn []
-                                  (swap! !state assoc :open? false)
-                                  (render!))})
-                  [:span])))
-  (ensure-toolbar!))
-
-(defn ensure-root! []
-  (or (js/document.getElementById panel-id)
-      (let [el (js/document.createElement "div")]
-        (set! (.-id el) panel-id)
-        (.appendChild js/document.body el)
-        el)))
-
-(defn site-statsig
-  "The page data as sent, read without applying saved changes."
-  []
-  (when-let [el (js/document.getElementById "client-bootstrap")]
-    (let [value (.call @!parse js/JSON (.-textContent el))]
-      (.-statsigPayload value))))
-
-(defn pull! []
-  (if-let [statsig (site-statsig)]
-    (swap! !state assoc
-           :ready? true
-           :experiments (read-experiments statsig)
-           :changes (read-changes))
-    (swap! !state assoc :ready? false :experiments []))
-  (when js/document.body
-    (ensure-root!)
-    (render!)))
-
-(defn watch-bootstrap! []
-  (when js/document.documentElement
-    (let [!observer (atom nil)
-          observer (js/MutationObserver.
-                    (fn [_ _]
-                      (when (js/document.getElementById "client-bootstrap")
-                        (when-let [current @!observer]
-                          (.disconnect current))
-                        (pull!))))]
-      (reset! !observer observer)
-      (.observe observer js/document.documentElement #js {:childList true :subtree true}))))
+(defn boot! []
+  (r/set-dispatch! event-handler)
+  (dispatch! [[:page/ax.boot]])
+  (watch-toolbar!))
 
 (install-rewrite!)
-
-(defn boot! []
-  (swap! !state assoc :open? false)
-  (honor-saved!)
-  (pull!)
-  (watch-toolbar!)
-  (when-not (js/document.getElementById "client-bootstrap")
-    (watch-bootstrap!)))
 
 (if js/document.body
   (boot!)
