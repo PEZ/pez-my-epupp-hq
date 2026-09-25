@@ -10,9 +10,6 @@
 
 (def ^:private gist-id-re #"^[0-9a-fA-F]{32}$")
 
-(def ^:private bookkeeping-line-re
-  #"\n :epupp/gist \"[0-9a-fA-F]{32}\"|\n :epupp/gist-sync \"[0-9a-fA-F]{40}\"")
-
 (defn parse-cli
   "Parse flags anywhere among positional args."
   [args]
@@ -41,69 +38,39 @@
         form))
     (catch Exception _ nil)))
 
-(defn- strip-bookkeeping
-  "Drop gist id and sync revision lines. Those stay on the local script."
-  [code]
-  (string/replace (or code "") bookkeeping-line-re ""))
-
-(defn- first-map-end
-  "Index of the closing brace of the first map form."
-  [code]
-  (let [start (string/index-of code "{")]
-    (when-not start
-      (abort! "Script has no manifest map."))
-    (loop [i start depth 0 in-str? false escape? false]
-      (if (>= i (count code))
-        (abort! "Script manifest is not closed.")
-        (let [c (nth code i)]
-          (cond
-            escape? (recur (inc i) depth in-str? false)
-            (and in-str? (= c \\)) (recur (inc i) depth true true)
-            (and in-str? (= c \")) (recur (inc i) depth false false)
-            in-str? (recur (inc i) depth true false)
-            (= c \") (recur (inc i) depth true false)
-            (= c \{) (recur (inc i) (inc depth) false false)
-            (= c \}) (if (= depth 1)
-                       i
-                       (recur (inc i) (dec depth) false false))
-            :else (recur (inc i) depth false false)))))))
-
-(defn- manifest-entry-pattern
-  [k]
-  (re-pattern (str "(?m)^[ ]*"
-                   (java.util.regex.Pattern/quote (pr-str k))
-                   "\\s+\"[^\"]*\"")))
-
-(defn- upsert-manifest-entry
-  "Set a string entry in the manifest map."
-  [code k v]
-  (let [line (str " " (pr-str k) " " (pr-str v))
-        pattern (manifest-entry-pattern k)]
-    (if (re-find pattern code)
-      (string/replace code pattern line)
-      (let [end (first-map-end code)]
-        (str (subs code 0 end) "\n" line (subs code end))))))
-
-(defn- local-record
-  "Shared source plus the local gist id and the revision it was synced at."
-  [code gist-id rev]
-  (-> code
-      strip-bookkeeping
-      (upsert-manifest-entry :epupp/gist gist-id)
-      (upsert-manifest-entry :epupp/gist-sync rev)))
-
-(defn- read-gist-ids
+(defn- read-set
+  "Read gist id, script path, and last synced revision. A bare id string still counts."
   []
   (if (fs/exists? gist-set-path)
-    (vec (edn/read-string (slurp gist-set-path)))
+    (mapv (fn [entry]
+            (if (string? entry)
+              {:gist/id entry}
+              entry))
+          (edn/read-string (slurp gist-set-path)))
     []))
 
-(defn- write-gist-ids!
-  [ids]
+(defn- write-set!
+  [entries]
   (spit gist-set-path
-        (str "["
-             (string/join "\n " (map pr-str ids))
-             "]\n")))
+        (str "[\n"
+             (string/join "\n" (map #(str " " (pr-str %)) entries))
+             "\n]\n")))
+
+(defn- record-sync!
+  "Remember a gist id, the local path, and the revision those two matched."
+  [entries gist-id path rev]
+  (let [next-entry (cond-> {:gist/id gist-id}
+                     path (assoc :script/path path)
+                     rev (assoc :gist/rev rev))
+        known? (some #(= gist-id (:gist/id %)) entries)
+        entries (if known?
+                  (mapv (fn [entry]
+                          (if (= gist-id (:gist/id entry))
+                            next-entry
+                            entry))
+                        entries)
+                  (conj entries next-entry))]
+    (write-set! entries)))
 
 (defn- gh-json
   [method path body]
@@ -165,28 +132,29 @@
                    {:script/path rel
                     :script/code code
                     :script/script-name (:epupp/script-name manifest)
-                    :script/gist-id (:epupp/gist manifest)
-                    :script/synced-rev (:epupp/gist-sync manifest)
                     :script/description (or (:epupp/description manifest) "")}))))
        (filterv some?)))
 
 (defn- pair-set
-  "Pair listed gists with local scripts. Gist id in the manifest wins, then script name."
-  [scripts gists]
-  (let [{:keys [assigned used]}
+  "Pair listed gists with local scripts. A path in the set wins, then script name."
+  [scripts gists entries]
+  (let [entry-by-id (into {} (map (juxt :gist/id identity) entries))
+        script-by-path (into {} (map (juxt :script/path identity) scripts))
+        {:keys [assigned used]}
         (reduce (fn [{:keys [used] :as acc} gist]
-                  (let [by-id (some (fn [script]
-                                      (when (= (:script/gist-id script) (:gist/id gist))
-                                        script))
-                                    scripts)
+                  (let [entry (entry-by-id (:gist/id gist))
+                        by-path (script-by-path (:script/path entry))
                         by-name (some (fn [script]
                                         (when (and (= (:script/script-name script)
                                                       (:gist/script-name gist))
                                                    (not (used (:script/path script))))
                                           script))
                                       scripts)
-                        script (or by-id by-name)]
-                    {:assigned (conj (:assigned acc) {:gist gist :script script})
+                        script (or by-path by-name)]
+                    {:assigned (conj (:assigned acc)
+                                     {:gist gist
+                                      :script script
+                                      :sync/rev (:gist/rev entry)})
                      :used (cond-> used script (conj (:script/path script)))}))
                 {:assigned [] :used #{}}
                 gists)
@@ -195,33 +163,29 @@
      :script-only (vec script-only)}))
 
 (defn- relation
-  "Classify one pair against the remembered gist revision, when the script has one."
-  [{:keys [gist script]}]
+  "Classify one pair against the revision remembered in gist_sync.edn."
+  [{:keys [gist script] :sync/keys [rev]}]
   (cond
     (nil? script) :gist-only
     (nil? gist) :script-only
     :else
-    (let [local (strip-bookkeeping (:script/code script))
-          remote (strip-bookkeeping (:gist/code gist))
-          remembered (:script/synced-rev script)]
+    (let [local (:script/code script)
+          remote (:gist/code gist)]
       (cond
         (= local remote) :same
-        (nil? remembered) :unrecorded
-        (= (:gist/rev gist) remembered) :script-differs
-        :else (let [old (strip-bookkeeping (:gist/code (fetch-gist-rev (:gist/id gist) remembered)))]
+        (nil? rev) :unrecorded
+        (= (:gist/rev gist) rev) :script-differs
+        :else (let [old (:gist/code (fetch-gist-rev (:gist/id gist) rev))]
                 (if (= local old)
                   :gist-differs
                   :both))))))
 
 (defn- load-world
   []
-  (let [scripts (local-scripts)
-        ids (->> (concat (read-gist-ids)
-                         (keep :script/gist-id scripts))
-                 distinct
-                 vec)
-        gists (mapv fetch-gist ids)]
-    (pair-set scripts gists)))
+  (let [entries (read-set)
+        scripts (local-scripts)
+        gists (mapv fetch-gist (mapv :gist/id entries))]
+    (pair-set scripts gists entries)))
 
 (defn- pair-label
   [{:keys [gist script]}]
@@ -290,8 +254,8 @@
   (fs/with-temp-dir [tmp {}]
     (let [remote-file (str (fs/path tmp "gist"))
           local-file (str (fs/path tmp "script"))
-          remote (strip-bookkeeping (:gist/code gist))
-          local (strip-bookkeeping (:script/code script))]
+          remote (:gist/code gist)
+          local (:script/code script)]
       (spit remote-file remote)
       (spit local-file local)
       (let [{:keys [out]} (process/shell {:out :string :continue true}
@@ -322,39 +286,29 @@
   (fs/create-dirs (fs/parent (fs/path path)))
   (spit path code))
 
-(defn- remember!
-  [ids gist-id]
-  (when-not (some #{gist-id} ids)
-    (write-gist-ids! (conj (vec ids) gist-id))))
-
 (defn- push!
   [{:keys [gist script]} private?]
   (when-not script
     (abort! "Nothing to push. Pass a userscript path to create a gist."))
-  (let [ids (read-gist-ids)
-        source (strip-bookkeeping (:script/code script))
+  (let [source (:script/code script)
         filename (gist-filename script gist)
         create? (nil? gist)
-        uploaded (if (and gist (= source (strip-bookkeeping (:gist/code gist))))
+        uploaded (if (and gist (= source (:gist/code gist)))
                    gist
-                   (write-gist! (:gist/id gist) filename source (not private?) create?))
-        gist-id (:gist/id uploaded)]
-    (write-script! (:script/path script) (local-record source gist-id (:gist/rev uploaded)))
-    (remember! ids gist-id)
-    (println (str "  pushed " (:script/path script) " -> " gist-id))))
+                   (write-gist! (:gist/id gist) filename source (not private?) create?))]
+    (record-sync! (read-set) (:gist/id uploaded) (:script/path script) (:gist/rev uploaded))
+    (println (str "  pushed " (:script/path script) " -> " (:gist/id uploaded)))))
 
 (defn- pull!
   [{:keys [gist script]}]
   (when-not gist
     (abort! "Nothing to pull. That script has no gist."))
-  (let [ids (read-gist-ids)
-        gist-id (:gist/id gist)
-        source (strip-bookkeeping (:gist/code gist))
+  (let [gist-id (:gist/id gist)
         path (or (:script/path script) (:gist/script-name gist))]
     (when-not path
       (abort! (str "Gist " gist-id " has no :epupp/script-name to pull into.")))
-    (write-script! path (local-record source gist-id (:gist/rev gist)))
-    (remember! ids gist-id)
+    (write-script! path (:gist/code gist))
+    (record-sync! (read-set) gist-id path (:gist/rev gist))
     (println (str "  pulled " gist-id " -> " path))))
 
 (defn- diff!

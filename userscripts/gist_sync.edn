@@ -1,5 +1,10 @@
-["3b0fdc406e7593eaaef609b6fb4a687d"
- "d466a85f98ec3f5f2e9aea7a13b89007"
- "f7059fe7328bb25ee3f459d7457dc2a8"
- "3f499d088a742386c5a42761c6c06c5a"
- "771e7578f07db07e9ebd35a6ed767192"]
+[
+ {:gist/id "3b0fdc406e7593eaaef609b6fb4a687d", :script/path "pez/element_printing.cljs", :gist/rev "0d0f20148b1db9ee61204899f044ba7d0cd87100"}
+ {:gist/id "d466a85f98ec3f5f2e9aea7a13b89007", :script/path "pez/linkedin_squirrel.cljs", :gist/rev "0d16d1a922e1a5b5e6a378f479bfce8e333b8515"}
+ {:gist/id "f7059fe7328bb25ee3f459d7457dc2a8", :script/path "pez/test_lib.cljs"}
+ #:gist{:id "3f499d088a742386c5a42761c6c06c5a"}
+ {:gist/id "771e7578f07db07e9ebd35a6ed767192", :script/path "pez/page_choices.cljs", :gist/rev "efc19e66d80698eefe692655088f2c5f9eca6e1b"}
+ {:gist/id "856da33ad095526551abdbb0f897ea93", :script/path "pez/youtube_finder.cljs", :gist/rev "5026ddb6a17c30b10a67ecf827d9d1768174bdf1"}
+ {:gist/id "8fb1f19e1e481d25f56af5d9d76fa135", :script/path "pez/calva_io_darkmode.cljs", :gist/rev "e4299cad273e219f1de1254f13ecb69bf3bcad2f"}
+ {:gist/id "6d6af685bcba5041e14086c32fed2744", :script/path "pez/gmail_yellow.cljs", :gist/rev "03d80941f9d1bbd1d397555bf6ecf2c399f349a4"}
+]

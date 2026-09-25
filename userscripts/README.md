@@ -65,7 +65,7 @@ Compare userscripts with the gists listed in `gist_sync.edn`. With no arguments,
 
 A path that exists is a userscript. A 32-character hex string is a gist id. Anything else is not found.
 
-Push and pull record `:epupp/gist` and `:epupp/gist-sync` on the local script. Those two lines stay out of the gist, so the shared source is the script itself. `--pull` writes the local file and does not change the gist.
+Push and pull record the gist id, the script path, and the gist revision in `gist_sync.edn`. The userscript file is the same text in git, in the gist, and in Epupp. `--pull` writes the local file and does not change the gist.
 
 ```sh
 bb gist-sync

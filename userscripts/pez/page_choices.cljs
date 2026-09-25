@@ -3,9 +3,7 @@
  :epupp/description "See the A/B experiments on this page, and change the ones this visit is in."
  :epupp/run-at "document-start"
  :epupp/inject ["scittle://replicant.js"
-                "epupp://epupp/ui.cljs"]
- :epupp/gist "771e7578f07db07e9ebd35a6ed767192"
- :epupp/gist-sync "0f05d4e54915ce5122d2e4e2b9c781588b7e4056"}
+                "epupp://epupp/ui.cljs"]}
 
 (ns pez.page-choices
   (:require [clojure.string :as string]
@@ -103,10 +101,12 @@
 
 (defn put-change
   "Sets or clears one override, dropping it when it matches the site."
-  [changes id param site next-value]
-  (let [params (if (= next-value site)
+  [{:override/keys [changes]
+    :experiment/keys [id]
+    :setting/keys [param site next]}]
+  (let [params (if (= next site)
                  (dissoc (get changes id) param)
-                 (assoc (get changes id) param next-value))]
+                 (assoc (get changes id) param next))]
     (if (seq params)
       (assoc changes id params)
       (dissoc changes id))))
@@ -118,13 +118,21 @@
 
 (defn shown-value
   "Returns the override when there is one, otherwise the site value."
-  [changes id param site]
+  [{:override/keys [changes]
+    :experiment/keys [id]
+    :setting/keys [param site]}]
   (get-in changes [id param] site))
 
 (defn changed?
   "True when this setting differs from what the page sent."
-  [changes id param site]
-  (not= (shown-value changes id param site) site))
+  [override]
+  (not= (shown-value override) (:setting/site override)))
+
+(comment "duplicate change-count")
+
+(comment "duplicate shown-value")
+
+(comment "duplicate changed?")
 
 (defn apply-changes!
   "Writes saved setting values into experiment data."
@@ -207,36 +215,46 @@
    [:span {:style {:width "18px" :height "18px" :border-radius "999px"
                    :background paper :display "block"}}]])
 
+(defn setting-override
+  "The override a setting row reads and writes."
+  [changes {:experiment/keys [id]} {:setting/keys [param site]}]
+  {:override/changes changes
+   :experiment/id id
+   :setting/param param
+   :setting/site site})
+
 (defn setting-control
-  [changes {:experiment/keys [id]} {:setting/keys [param label kind site]}]
-  (let [current (shown-value changes id param site)
-        commit [:setting/ax.commit id param site]]
+  [override {:setting/keys [label kind]}]
+  (let [current (shown-value override)]
     (case kind
-      :bool (switch (boolean current) label (conj commit (not (boolean current))))
+      :bool (switch (boolean current)
+                    label
+                    [:setting/ax.commit (assoc override :setting/next (not (boolean current)))])
       :text [:input {:type "text" :value (str current) :aria-label label
                      :style (field-style)
-                     :on {:change [(conj commit :event/target.value)]}}]
+                     :on {:change [[:setting/ax.commit (assoc override :setting/next :event/target.value)]]}}]
       :number [:input {:type "number" :value (str current) :aria-label label
                        :style (field-style)
-                       :on {:change [[:setting/ax.commit-number id param site :event/target.value]]}}]
+                       :on {:change [[:setting/ax.commit-number (assoc override :setting/raw :event/target.value)]]}}]
       [:span {:style {:color quiet :font-size "13px"}} "Left as sent"])))
 
 (defn setting-row
-  [changes {:experiment/keys [id] :as experiment} {:setting/keys [param label site] :as setting}]
-  (let [edited? (changed? changes id param site)]
+  [changes experiment {:setting/keys [label] :as setting}]
+  (let [override (setting-override changes experiment setting)
+        edited? (changed? override)]
     [:div {:style {:display "flex" :justify-content "space-between"
                    :align-items "center" :gap "12px"}}
      [:span label]
      [:span {:style {:display "flex" :align-items "center" :gap "8px" :flex-shrink "0"}}
       (when edited?
         [:button {:type "button"
-                  :on {:click [[:setting/ax.commit id param site site]]}
+                  :on {:click [[:setting/ax.commit (assoc override :setting/next (:setting/site override))]]}
                   :style {:font "inherit" :font-size "12px" :color quiet
                           :background "transparent" :border "none" :padding "0"
                           :cursor "pointer" :text-decoration "underline"
                           :text-underline-offset "2px"}}
          "Reset"])
-      (setting-control changes experiment setting)]]))
+      (setting-control override setting)]]))
 
 (defn experiment-block
   [changes {:experiment/keys [title settings] :as experiment}]
@@ -313,11 +331,26 @@
    :uf/fxs (into extra-fxs [[:ui/fx.render db]
                             [:toolbar/fx.sync (:page/open? db)]])})
 
+(defn commit-setting
+  "Saves one override and writes it into the page."
+  [state override]
+  (let [{:page/keys [changes]} state
+        changes (put-change (assoc override :override/changes changes))
+        db (assoc state :page/changes changes)]
+    (with-render db [[:storage/fx.write changes]
+                     [:page/fx.honor changes]])))
+
+(defn commit-number
+  "Turns a typed number into a setting override."
+  [override]
+  (let [parsed (js/parseFloat (:setting/raw override))]
+    (when-not (js/Number.isNaN parsed)
+      {:uf/dxs [[:setting/ax.commit (assoc override :setting/next parsed)]]})))
+
 (defn handle-action
   "Decides the next state and which effects should run."
   [state _uf-data action]
-  (let [[op & args] action
-        {:page/keys [changes]} state]
+  (let [[op & args] action]
     (case op
       :panel/ax.toggle
       (with-render (update state :page/open? not) [])
@@ -326,17 +359,10 @@
       (with-render (assoc state :page/open? false) [])
 
       :setting/ax.commit
-      (let [[id param site next-value] args
-            changes (put-change changes id param site next-value)
-            db (assoc state :page/changes changes)]
-        (with-render db [[:storage/fx.write changes]
-                         [:page/fx.honor changes]]))
+      (commit-setting state (first args))
 
       :setting/ax.commit-number
-      (let [[id param site raw] args
-            parsed (js/parseFloat raw)]
-        (when-not (js/Number.isNaN parsed)
-          {:uf/dxs [[:setting/ax.commit id param site parsed]]}))
+      (commit-number (first args))
 
       :page/ax.restore
       (let [db (assoc state :page/changes {})]
