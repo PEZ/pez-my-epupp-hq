@@ -20,3 +20,4 @@ pom.xml.asc
 .lsp/cache/
 .calva/
 !.calva/config.edn
+.tmp
