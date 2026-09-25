@@ -36,6 +36,14 @@
          :fill "currentColor"}
    [:path {:d "M8.70701 8.00001L12.353 4.35401C12.548 4.15901 12.548 3.84201 12.353 3.64701C12.158 3.45201 11.841 3.45201 11.646 3.64701L8.00001 7.29301L4.35401 3.64701C4.15901 3.45201 3.84201 3.45201 3.64701 3.64701C3.45201 3.84201 3.45201 4.15901 3.64701 4.35401L7.29301 8.00001L3.64701 11.646C3.45201 11.841 3.45201 12.158 3.64701 12.353C3.74501 12.451 3.87301 12.499 4.00101 12.499C4.12901 12.499 4.25701 12.45 4.35501 12.353L8.00101 8.70701L11.647 12.353C11.745 12.451 11.873 12.499 12.001 12.499C12.129 12.499 12.257 12.45 12.355 12.353C12.55 12.158 12.55 11.841 12.355 11.646L8.70901 8.00001H8.70701Z"}]])
 
+(defn humanize
+  "Turns a raw setting key into a short label."
+  [raw]
+  (let [[head & tail] (string/split (str raw) #"_")]
+    (str (string/capitalize (or head ""))
+         (when (seq tail)
+           (str " " (string/join " " tail))))))
+
 (defn setting-kind
   "Classifies a site value as a control the panel can show."
   [value]
@@ -82,7 +90,7 @@
                              (let [param (aget names j)
                                    site (aget value param)]
                                {:setting/param param
-                                :setting/label param
+                                :setting/label (humanize param)
                                 :setting/kind (setting-kind site)
                                 :setting/site site}))
                            (range (.-length names)))}))))
@@ -134,18 +142,23 @@
 
 (comment "duplicate changed?")
 
+(defn write-config-params!
+  "Writes one experiment's overrides onto its config."
+  [config params]
+  (when (seq params)
+    (set! (.-is_user_in_experiment config) true)
+    (let [value (or (.-value config) (js-obj))]
+      (doseq [[param value*] params]
+        (aset value param (clj->js value*)))
+      (set! (.-value config) value))))
+
 (defn apply-changes!
   "Writes saved setting values into experiment data."
   [statsig changes]
   (let [configs (.-dynamic_configs statsig)]
     (doseq [[id params] changes]
       (when-let [config (aget configs id)]
-        (when (seq params)
-          (set! (.-is_user_in_experiment config) true)
-          (let [value (or (.-value config) (js-obj))]
-            (doseq [[param value*] params]
-              (aset value param (clj->js value*)))
-            (set! (.-value config) value))))))
+        (write-config-params! config params))))
   statsig)
 
 (defn live-statsig
@@ -268,6 +281,26 @@
         ^{:key param}
         (setting-row changes experiment setting))])])
 
+(defn panel-header []
+  [:div {:style {:display "flex" :align-items "flex-start"
+                 :justify-content "space-between" :gap "8px"}}
+   [:div {:style {:min-width "0" :flex "1"}}
+    (ui/epupp-header :size 22 :title "Active A/B experiments" :tagline false)]
+   [:button {:type "button" :aria-label "Close"
+             :on {:click [[:panel/ax.close]]}
+             :style {:width "28px" :height "28px" :padding "0" :border "none"
+                     :border-radius "8px" :background "transparent" :color ink
+                     :cursor "pointer" :display "flex" :align-items "center"
+                     :justify-content "center" :flex-shrink "0"}}
+    (close-icon :size 16)]])
+
+(defn experiment-list [experiments changes]
+  (when (seq experiments)
+    [:div {:style {:display "flex" :flex-direction "column" :gap "16px" :margin-top "16px"}}
+     (for [{:experiment/keys [id] :as experiment} experiments]
+       ^{:key id}
+       (experiment-block changes experiment))]))
+
 (defn text-button [label action]
   [:button {:type "button"
             :on {:click [action]}
@@ -277,41 +310,30 @@
                     :text-underline-offset "3px"}}
    label])
 
+(defn panel-actions [changes]
+  [:div {:style {:display "flex" :gap "16px" :margin-top "20px"}}
+   (text-button "Reload" [:page/ax.reload])
+   (when (pos? (change-count changes))
+     (text-button "Put the page's experiments back" [:page/ax.restore]))])
+
 (defn panel
   [{:page/keys [ready? open? experiments changes]}]
   (when open?
-    (let [experiments (with-titles experiments)]
-      [:div {:style {:position "fixed" :top "12px" :right "12px"
-                     :z-index "2147483646" :width "340px"
-                     :max-height "calc(100vh - 24px)" :overflow "auto"
-                     :box-sizing "border-box" :padding "12px 14px 16px"
-                     :background paper :color ink :font-family page-face
-                     :font-size "14px" :line-height "1.4"
-                     :border (str "1px solid " line) :border-radius "16px"
-                     :box-shadow "0 8px 28px rgba(0, 0, 0, 0.08)"}}
-       [:div {:style {:display "flex" :align-items "flex-start"
-                      :justify-content "space-between" :gap "8px"}}
-        [:div {:style {:min-width "0" :flex "1"}}
-         (ui/epupp-header :size 22 :title "Active A/B experiments" :tagline false)]
-        [:button {:type "button" :aria-label "Close"
-                  :on {:click [[:panel/ax.close]]}
-                  :style {:width "28px" :height "28px" :padding "0" :border "none"
-                          :border-radius "8px" :background "transparent" :color ink
-                          :cursor "pointer" :display "flex" :align-items "center"
-                          :justify-content "center" :flex-shrink "0"}}
-         (close-icon :size 16)]]
-       [:p {:style {:margin "12px 0 0" :color quiet}}
-        (status-line ready? experiments changes)]
-       (when (and ready? (seq experiments))
-         [:div {:style {:display "flex" :flex-direction "column" :gap "16px" :margin-top "16px"}}
-          (for [{:experiment/keys [id] :as experiment} experiments]
-            ^{:key id}
-            (experiment-block changes experiment))])
-       (when ready?
-         [:div {:style {:display "flex" :gap "16px" :margin-top "20px"}}
-          (text-button "Reload" [:page/ax.reload])
-          (when (pos? (change-count changes))
-            (text-button "Put the page's experiments back" [:page/ax.restore]))])])))
+    [:div {:style {:position "fixed" :top "12px" :right "12px"
+                   :z-index "2147483646" :width "340px"
+                   :max-height "calc(100vh - 24px)" :overflow "auto"
+                   :box-sizing "border-box" :padding "12px 14px 16px"
+                   :background paper :color ink :font-family page-face
+                   :font-size "14px" :line-height "1.4"
+                   :border (str "1px solid " line) :border-radius "16px"
+                   :box-shadow "0 8px 28px rgba(0, 0, 0, 0.08)"}}
+     (panel-header)
+     [:p {:style {:margin "12px 0 0" :color quiet}}
+      (status-line ready? experiments changes)]
+     (when ready?
+       [:div
+        (experiment-list (with-titles experiments) changes)
+        (panel-actions changes)])]))
 
 (defn enrich-from-event [{:replicant/keys [js-event]} action]
   (walk/postwalk
@@ -439,41 +461,46 @@
     (when (seq changes)
       (apply-changes! live changes))))
 
+(defn render-ui! [[db]]
+  (let [root (or (js/document.getElementById panel-id)
+                 (when js/document.body
+                   (let [el (js/document.createElement "div")]
+                     (set! (.-id el) panel-id)
+                     (.appendChild js/document.body el)
+                     el)))]
+    (when root
+      (r/render root (or (panel db) [:span])))))
+
+(defn sync-toolbar! [[open?]]
+  (ensure-toolbar! open?))
+
+(defn write-storage! [[changes]]
+  (if (empty? changes)
+    (.removeItem js/localStorage storage-key)
+    (.setItem js/localStorage storage-key (js/JSON.stringify (clj->js changes)))))
+
+(defn honor-effect! [[changes]]
+  (honor! changes))
+
+(defn load-page! [_args]
+  {:page/experiments (when-let [statsig (script-statsig)]
+                       (read-experiments statsig))
+   :page/changes (read-changes)})
+
+(defn reload-page! [_args]
+  (js/setTimeout #(.reload js/location) 50))
+
+(def effect-handlers
+  {:ui/fx.render render-ui!
+   :toolbar/fx.sync sync-toolbar!
+   :storage/fx.write write-storage!
+   :page/fx.honor honor-effect!
+   :page/fx.load load-page!
+   :page/fx.reload reload-page!})
+
 (defn perform-effect! [_dispatch [effect & args]]
-  (case effect
-    :ui/fx.render
-    (let [[db] args
-          root (or (js/document.getElementById panel-id)
-                   (when js/document.body
-                     (let [el (js/document.createElement "div")]
-                       (set! (.-id el) panel-id)
-                       (.appendChild js/document.body el)
-                       el)))]
-      (when root
-        (r/render root (or (panel db) [:span]))))
-
-    :toolbar/fx.sync
-    (let [[open?] args]
-      (ensure-toolbar! open?))
-
-    :storage/fx.write
-    (let [[changes] args]
-      (if (empty? changes)
-        (.removeItem js/localStorage storage-key)
-        (.setItem js/localStorage storage-key (js/JSON.stringify (clj->js changes)))))
-
-    :page/fx.honor
-    (let [[changes] args]
-      (honor! changes))
-
-    :page/fx.load
-    {:page/experiments (when-let [statsig (script-statsig)]
-                         (read-experiments statsig))
-     :page/changes (read-changes)}
-
-    :page/fx.reload
-    (js/setTimeout #(.reload js/location) 50)
-
+  (if-let [handler (get effect-handlers effect)]
+    (handler args)
     :uf/unhandled-fx))
 
 (defn execute-effect! [dispatch fx]
@@ -521,20 +548,28 @@
 (defn event-handler [replicant-data actions]
   (dispatch! actions replicant-data))
 
+(defn parse-json [original text reviver]
+  (if (undefined? reviver)
+    (.call original js/JSON text)
+    (.call original js/JSON text reviver)))
+
+(defn statsig-payload [value]
+  (when (some? value)
+    (.-statsigPayload value)))
+
+(defn with-saved-overrides [value]
+  (when-let [statsig (statsig-payload value)]
+    (apply-changes! statsig (read-changes)))
+  value)
+
 (defn install-rewrite!
   "Rewrites page data on parse, before ChatGPT reads it."
   []
   (when-not (.-__pezPageChoices js/JSON)
     (let [original (.-parse js/JSON)]
       (reset! !parse original)
-      (set! (.-parse js/JSON)
-            (fn [text reviver]
-              (let [value (if (undefined? reviver)
-                            (.call original js/JSON text)
-                            (.call original js/JSON text reviver))]
-                (when-let [statsig (when (some? value) (.-statsigPayload value))]
-                  (apply-changes! statsig (read-changes)))
-                value)))
+      (set! (.-parse js/JSON) (fn [text reviver]
+                                (with-saved-overrides (parse-json original text reviver))))
       (set! (.-__pezPageChoices js/JSON) true))))
 
 (defn watch-toolbar!
