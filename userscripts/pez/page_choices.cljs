@@ -104,10 +104,15 @@
             (range (.-length keys)))))))
 
 (defn read-changes
-  "Returns saved changes, or an empty map."
+  "Returns saved setting changes, ignoring older opt-in and opt-out marks."
   []
   (if-let [raw (.getItem js/localStorage storage-key)]
-    (js->clj (.call @!parse js/JSON raw))
+    (into {}
+          (keep (fn [[id params]]
+                  (let [settings (into {} (remove #(string/starts-with? (key %) "__") params))]
+                    (when (seq settings)
+                      [id settings]))))
+          (js->clj (.call @!parse js/JSON raw)))
     {}))
 
 (defn write-changes!
@@ -166,28 +171,15 @@
         (dissoc changes id)))))
 
 (defn apply-changes!
-  "Writes saved changes into the page data ChatGPT is about to read."
+  "Writes saved setting values into the page data ChatGPT reads."
   [statsig changes]
   (let [configs (.-dynamic_configs statsig)]
     (doseq [[id params] changes]
       (when-let [config (aget configs id)]
-        (cond
-          (opted-out? {id params} id)
-          (do
-            (set! (.-is_user_in_experiment config) false)
-            (set! (.-group_name config) nil)
-            (set! (.-value config) #js {}))
-
-          (opted-in? {id params} id)
+        (when (seq params)
+          (set! (.-is_user_in_experiment config) true)
           (let [value (or (.-value config) (js-obj))]
-            (set! (.-is_user_in_experiment config) true)
-            (doseq [[param value*] (dissoc params opt-out-key opt-in-key)]
-              (aset value param (clj->js value*)))
-            (set! (.-value config) value))
-
-          :else
-          (let [value (or (.-value config) (js-obj))]
-            (doseq [[param value*] (dissoc params opt-out-key opt-in-key)]
+            (doseq [[param value*] params]
               (aset value param (clj->js value*)))
             (set! (.-value config) value))))))
   statsig)
@@ -221,17 +213,17 @@
         (when (and src dst)
           (set! (.-is_user_in_experiment dst) (.-is_user_in_experiment src))
           (set! (.-group_name dst) (.-group_name src))
-          (set! (.-value dst) (.-value src)))))))
+          (set! (.-value dst) (js/Object.assign #js {} (.-value src))))))))
 
 (defn honor-saved!
   "Writes saved choices into the experiment data the page is reading."
   []
   (when-let [live (live-statsig)]
+    (when-let [original (script-statsig)]
+      (copy-assignments! original live))
     (let [changes (read-changes)]
-      (if (seq changes)
-        (apply-changes! live changes)
-        (when-let [original (script-statsig)]
-          (copy-assignments! original live))))))
+      (when (seq changes)
+        (apply-changes! live changes)))))
 
 (defn install-rewrite!
   "Rewrites page data on parse, once, before ChatGPT reads it."
@@ -265,16 +257,14 @@
   (not= (shown-value changes id param site) site))
 
 (defn status-line
-  "One line of where the experiments and your changes stand."
+  "One line of how many settings differ from what the page sent."
   [ready? experiments changes]
-  (let [editable (count (filter :in-effect? experiments))
-        resting (- (count experiments) editable)
-        changed (change-count changes)]
+  (let [n (change-count changes)]
     (cond
       (not ready?) "Reading the experiments on this page."
       (zero? (count experiments)) "No experiments arrived with this page."
-      (pos? changed) (str changed " changed. Reload to see the page use them.")
-      :else (str editable " you can change. " resting " are not in effect this visit."))))
+      (= 1 n) "1 override."
+      :else (str n " overrides."))))
 
 (defn put-change
   "Sets or clears one saved change, dropping it when it matches the site."
@@ -290,12 +280,7 @@
 (defn remember-change!
   "Remembers one setting and writes it into the page."
   [id param site next-value]
-  (let [experiment (first (filter #(= id (:id %)) (:experiments @!state)))
-        changes (put-change (:changes @!state) id param site next-value)
-        changes (if (or (not (:in-effect? experiment))
-                        (opted-out? (:changes @!state) id))
-                  (set-opt-in changes id)
-                  changes)]
+  (let [changes (put-change (:changes @!state) id param site next-value)]
     (write-changes! changes)
     (swap! !state assoc :changes changes)
     (honor-saved!)
@@ -382,21 +367,12 @@
   [commit editable? changes experiment setting]
   (let [{:keys [id]} experiment
         {:keys [param label site]} setting
-        edited? (and editable? (changed? changes id param site))
-        sent (cond
-               (true? site) "on"
-               (false? site) "off"
-               (string? site) (str "\u201c" site "\u201d")
-               :else (str site))]
+        edited? (and editable? (changed? changes id param site))]
     [:div {:style {:display "flex"
                    :justify-content "space-between"
                    :align-items "center"
                    :gap "12px"}}
-     [:span {:style {:display "flex" :flex-direction "column" :gap "2px" :min-width "0"}}
-      [:span label]
-      (when edited?
-        [:span {:style {:color quiet :font-size "12px"}}
-         (str "Page sent " sent)])]
+     [:span label]
      [:span {:style {:display "flex" :align-items "center" :gap "8px" :flex-shrink "0"}}
       (when edited?
         [:button {:type "button"
@@ -414,38 +390,20 @@
       (setting-control commit editable? changes experiment setting)]]))
 
 (defn experiment-block
-  [commit set-opt changes {:keys [id title settings] :as experiment}]
-  (let [included? (:in-effect? experiment)
-        left? (opted-out? changes id)
-        joined? (opted-in? changes id)
-        in-use? (and (or included? joined?) (not left?))]
-    [:section {:style {:display "flex" :flex-direction "column" :gap "8px"}}
-     [:div {:style {:display "flex" :justify-content "space-between" :align-items "baseline" :gap "8px"}}
-      [:h2 {:style {:margin "0"
-                    :font-family page-face
-                    :font-size "16px"
-                    :font-weight "600"
-                    :line-height "1.3"
-                    :color ink}}
-       title]
-      [:button {:type "button"
-                :on {:click (fn [_] (set-opt id in-use?))}
-                :style {:font "inherit"
-                        :font-size "13px"
-                        :color ink
-                        :background "transparent"
-                        :border "none"
-                        :padding "0"
-                        :cursor "pointer"
-                        :text-decoration "underline"
-                        :text-underline-offset "3px"
-                        :flex-shrink "0"}}
-       (if in-use? "Opt out" "Opt in")]]
-     (when (seq settings)
-       [:div {:style {:display "flex" :flex-direction "column" :gap "8px"}}
-        (for [setting settings]
-          ^{:key (:param setting)}
-          (setting-row commit true changes experiment setting))])]))
+  [commit changes {:keys [title settings] :as experiment}]
+  [:section {:style {:display "flex" :flex-direction "column" :gap "8px"}}
+   [:h2 {:style {:margin "0"
+                 :font-family page-face
+                 :font-size "16px"
+                 :font-weight "600"
+                 :line-height "1.3"
+                 :color ink}}
+    title]
+   (when (seq settings)
+     [:div {:style {:display "flex" :flex-direction "column" :gap "8px"}}
+      (for [setting settings]
+        ^{:key (:param setting)}
+        (setting-row commit true changes experiment setting))])])
 
 (defn text-button
   [label action]
@@ -504,13 +462,9 @@
     (with-titles (vec (concat never-in left)))))
 
 (defn panel
-  [{:keys [ready? open? open-groups experiments changes]} {:keys [commit set-opt reload restore hide toggle-group]}]
+  [{:keys [ready? open? experiments changes]} {:keys [commit reload restore hide]}]
   (when open?
-    (let [included (filterv :in-effect? experiments)
-          editable (with-titles (filterv #(not (opted-out? changes (:id %))) included))
-          resting (resting-experiments experiments changes)
-          editable-open? (group-open? open-groups :editable)
-          resting-open? (group-open? open-groups :resting)]
+    (let [experiments (with-titles experiments)]
       [:div {:style {:position "fixed"
                      :top "12px"
                      :right "12px"
@@ -549,26 +503,11 @@
          (close-icon :size 16)]]
        [:p {:style {:margin "12px 0 0" :color quiet}}
         (status-line ready? experiments changes)]
-       (when (and ready? (seq editable))
-         [:div
-          (disclosure editable-open? "You can change these" (count editable)
-                      (fn [] (toggle-group :editable)))
-          (when editable-open?
-            [:div {:style {:display "flex" :flex-direction "column" :gap "16px" :margin-top "8px"}}
-             (for [experiment editable]
-               ^{:key (:id experiment)}
-               (experiment-block commit set-opt changes experiment))])])
-       (when (and ready? (seq resting))
-         [:div
-          (disclosure resting-open? "Not in effect this visit" (count resting)
-                      (fn [] (toggle-group :resting)))
-          (when resting-open?
-            [:div {:style {:display "flex" :flex-direction "column" :gap "16px" :margin-top "4px"}}
-             [:p {:style {:margin "0" :color quiet}}
-              "ChatGPT did not include you in these for this visit, or you opted out. The page is not using them. Opt in brings back one you left."]
-             (for [experiment resting]
-               ^{:key (:id experiment)}
-               (experiment-block commit set-opt changes experiment))])])
+       (when (and ready? (seq experiments))
+         [:div {:style {:display "flex" :flex-direction "column" :gap "16px" :margin-top "16px"}}
+          (for [experiment experiments]
+            ^{:key (:id experiment)}
+            (experiment-block commit changes experiment))])
        (when ready?
          [:div {:style {:display "flex" :gap "16px" :margin-top "20px"}}
           (text-button "Reload" reload)
@@ -638,7 +577,12 @@
                                     (remember-change! id param site next-value)
                                     (render!))
                           :set-opt (fn [id leave?]
-                                     (let [changes (set-opt-out (:changes @!state) id leave?)]
+                                     (let [experiment (first (filter #(= id (:id %)) (:experiments @!state)))
+                                           changes (if leave?
+                                                     (set-opt-out (:changes @!state) id true)
+                                                     (if (:in-effect? experiment)
+                                                       (set-opt-out (:changes @!state) id false)
+                                                       (set-opt-in (:changes @!state) id)))]
                                        (write-changes! changes)
                                        (swap! !state assoc :changes changes)
                                        (honor-saved!))
