@@ -1,5 +1,7 @@
 {:epupp/script-name "pez/page_choices.cljs"
- :epupp/description "See this page's Statsig experiments, and change the ones this visit is in. Run it by hand."
+ :epupp/auto-run-match "*"
+ :epupp/description "See this page's Statsig experiments, and change the ones this visit is in."
+ :epupp/run-at "document-start"
  :epupp/inject ["scittle://replicant.js"
                 "epupp://epupp/ui.cljs"]}
 
@@ -18,12 +20,15 @@
 (def line "#ececec")
 (def page-face "-apple-system-body, ui-sans-serif, -apple-system, system-ui, \"Segoe UI\", Helvetica, Arial, sans-serif")
 
-(defonce !parse (atom (.-parse js/JSON)))
-(defonce !sent (atom nil))
 (defonce !state (atom {:page/ready? false
                        :page/open? false
                        :page/experiments []
-                       :page/changes {}}))
+                       :page/changes {}
+                       :page/sent nil
+                       :page/started? false
+                       :page/saw-statsig? false
+                       :page/watching? false
+                       :page/watch nil}))
 
 (defn close-icon
   "Codicon close mark, the same one Epupp uses."
@@ -110,7 +115,7 @@
           (keep (fn [[id params]]
                   (let [settings (into {} (remove #(string/starts-with? (key %) "__") params))]
                     (when (seq settings) [id settings]))))
-          (js->clj (.call @!parse js/JSON raw)))
+          (js->clj (js/JSON.parse raw)))
     {}))
 
 (defn put-change
@@ -163,36 +168,30 @@
         (write-config-params! config params))))
   statsig)
 
+(defn statsig-client
+  []
+  (when-let [statsig js/window.__STATSIG__]
+    (or (.-firstInstance statsig)
+        (when-let [instances (.-instances statsig)]
+          (let [keys (js/Object.keys instances)]
+            (when (pos? (.-length keys))
+              (aget instances (aget keys 0))))))))
+
 (defn live-statsig
   "The experiment data the running page is reading."
   []
-  (when-let [statsig js/window.__STATSIG__]
-    (let [client (or (.-firstInstance statsig)
-                     (when-let [instances (.-instances statsig)]
-                       (let [keys (js/Object.keys instances)]
-                         (when (pos? (.-length keys))
-                           (aget instances (aget keys 0))))))]
-      (when client
-        (let [store (.-_store client)
-              values (when store (.-_values store))]
-          (when values (.-_values values)))))))
+  (some-> (statsig-client) .-_store .-_values .-_values))
+
+(defn original-parse
+  []
+  (or (.-__pezOriginalParse js/JSON) (.-parse js/JSON)))
 
 (defn bootstrap-statsig
   "Reads Statsig payload from the page bootstrap script."
   []
   (when-let [el (js/document.getElementById "client-bootstrap")]
-    (when-let [value (.call @!parse js/JSON (.-textContent el))]
+    (when-let [value (.call (original-parse) js/JSON (.-textContent el))]
       (.-statsigPayload value))))
-
-(defn sent-statsig!
-  "Returns original Statsig values for reading experiments."
-  []
-  (or (bootstrap-statsig)
-      @!sent
-      (when-let [live (live-statsig)]
-        (let [cloned (.call @!parse js/JSON (js/JSON.stringify live))]
-          (reset! !sent cloned)
-          cloned))))
 
 (defn copy-config-bucket!
   "Copies experiment assignments for one config bucket."
@@ -432,7 +431,7 @@
         changes (put-change (assoc override :override/changes changes))
         db (assoc state :page/changes changes)]
     (with-render db [[:storage/fx.write changes]
-                     [:page/fx.honor changes]])))
+                     [:page/fx.honor (:page/sent db) changes]])))
 
 (defn commit-number
   "Turns a typed number into a setting override."
@@ -461,37 +460,132 @@
       :page/ax.restore
       (let [db (assoc state :page/changes {})]
         (with-render db [[:storage/fx.write {}]
-                         [:page/fx.honor {}]]))
+                         [:page/fx.honor (:page/sent db) {}]]))
 
       :page/ax.reload
       {:uf/fxs [[:page/fx.reload]]}
 
-      :page/ax.boot
-      {:uf/fxs [[:page/fx.load]]
-       :uf/dxs [[:page/ax.loaded :uf/prev-result]]}
-
       :page/ax.loaded
-      (let [[{:page/keys [experiments changes]}] args
-            db {:page/ready? true
-                :page/open? true
-                :page/experiments (or experiments [])
-                :page/changes (or changes {})}]
-        (with-render db [[:page/fx.honor changes]]))
+      (let [[{:page/keys [sent experiments changes]}] args]
+        (with-render {:page/ready? true
+                      :page/open? true
+                      :page/started? true
+                      :page/saw-statsig? true
+                      :page/watching? false
+                      :page/watch nil
+                      :page/sent sent
+                      :page/experiments (or experiments [])
+                      :page/changes (or changes {})}
+                     [[:page/fx.honor sent changes]]))
+
+      :page/ax.kick
+      (if (:page/started? state)
+        (with-render (assoc state :page/open? true) [[:page/fx.install]])
+        {:uf/db state
+         :uf/fxs [[:page/fx.install] [:page/fx.probe]]
+         :uf/dxs [[:page/ax.probed :uf/prev-result]]})
+
+      :page/ax.saw-statsig
+      (let [db (assoc state :page/saw-statsig? true)]
+        (if (:page/started? state)
+          {:uf/db db}
+          {:uf/db db
+           :uf/fxs [[:page/fx.probe]]
+           :uf/dxs [[:page/ax.probed :uf/prev-result]]}))
+
+      :page/ax.look
+      (cond
+        (and (:page/started? state) (:page/watch state))
+        {:uf/db (assoc state :page/watch nil :page/watching? false)
+         :uf/fxs [[:page/fx.clear-watch (:page/watch state)]]}
+
+        (:page/started? state)
+        {:uf/db state}
+
+        :else
+        {:uf/fxs [[:page/fx.probe]]
+         :uf/dxs [[:page/ax.probed :uf/prev-result]]})
+
+      :page/ax.probed
+      (let [probe (first args)
+            found? (or (:page/saw-statsig? state)
+                       (:statsig/live? probe)
+                       (:statsig/bootstrap? probe))
+            db (if found? (assoc state :page/saw-statsig? true) state)]
+        (cond
+          (:page/started? state)
+          (with-render (assoc db :page/open? true) [])
+
+          (and found? (:dom/body? probe))
+          (let [db* (assoc db :page/started? true :page/watching? false :page/watch nil)
+                fxs (cond-> []
+                      (:page/watch state) (conj [:page/fx.clear-watch (:page/watch state)])
+                      true (conj [:page/fx.load (:page/sent state)]))]
+            {:uf/db db*
+             :uf/fxs fxs
+             :uf/dxs [[:page/ax.loaded :uf/prev-result]]})
+
+          (:page/watching? state)
+          {:uf/db db}
+
+          :else
+          {:uf/db (assoc db :page/watching? true)
+           :uf/fxs [[:page/fx.arm]]
+           :uf/dxs [[:page/ax.armed :uf/prev-result]]}))
+
+      :page/ax.armed
+      (let [timer (first args)]
+        (if (:page/started? state)
+          {:uf/fxs [[:page/fx.clear-watch timer]]}
+          {:uf/db (assoc state :page/watch timer)}))
+
+      :page/ax.expire
+      (let [timer (first args)]
+        (if (= timer (:page/watch state))
+          {:uf/db (assoc state :page/watch nil :page/watching? false)
+           :uf/fxs [[:page/fx.clear-watch timer]]}
+          {:uf/db state}))
 
       :uf/unhandled-ax)))
 
 (defn honor!
   "Copies original assignments, then applies overrides."
-  [changes]
+  [sent changes]
   (when-let [live (live-statsig)]
-    (when-let [original (sent-statsig!)]
+    (when-let [original (or (bootstrap-statsig) sent)]
       (copy-assignments! original live))
     (when (seq changes)
       (apply-changes! live changes))))
 
+(defn parse-json [original text reviver]
+  (if (undefined? reviver)
+    (.call original js/JSON text)
+    (.call original js/JSON text reviver)))
+
+(defn with-saved-overrides
+  "Applies saved overrides to parsed bootstrap payload."
+  [dispatch value]
+  (when-let [statsig (when (some? value) (.-statsigPayload value))]
+    (apply-changes! statsig (read-changes))
+    (js/setTimeout #(dispatch [[:page/ax.saw-statsig]]) 0))
+  value)
+
+(defn install-rewrite!
+  "Rewrites parsed JSON when it carries a Statsig payload."
+  [dispatch]
+  (let [original (or (.-__pezOriginalParse js/JSON)
+                     (when-not (.-__pezPageChoices js/JSON)
+                       (.-parse js/JSON)))]
+    (when original
+      (set! (.-__pezOriginalParse js/JSON) original)
+      (set! (.-parse js/JSON)
+            (fn [text reviver]
+              (with-saved-overrides dispatch (parse-json original text reviver))))
+      (set! (.-__pezPageChoices js/JSON) true))))
+
 (defn render-ui!
   "Mounts the panel root and renders the shell."
-  [[db]]
+  [_dispatch [db]]
   (let [root (or (js/document.getElementById panel-id)
                  (when js/document.body
                    (let [el (js/document.createElement "div")]
@@ -501,32 +595,64 @@
     (when root
       (r/render root (or (shell db) [:span])))))
 
-(defn write-storage! [[changes]]
+(defn write-storage! [_dispatch [changes]]
   (if (empty? changes)
     (.removeItem js/localStorage storage-key)
     (.setItem js/localStorage storage-key (js/JSON.stringify (clj->js changes)))))
 
-(defn honor-effect! [[changes]]
-  (honor! changes))
+(defn honor-effect! [_dispatch [sent changes]]
+  (honor! sent changes))
 
-(defn load-page! [_args]
-  {:page/experiments (when-let [statsig (sent-statsig!)]
-                       (read-experiments statsig))
-   :page/changes (read-changes)})
+(defn clone-values
+  [values]
+  (.call (original-parse) js/JSON (js/JSON.stringify values)))
 
-(defn reload-page! [_args]
+(defn load-page! [_dispatch [sent]]
+  (let [bootstrap (bootstrap-statsig)
+        snapshot (if bootstrap
+                   nil
+                   (or sent (when-let [live (live-statsig)] (clone-values live))))
+        source (or bootstrap snapshot)]
+    {:page/sent snapshot
+     :page/experiments (when source (read-experiments source))
+     :page/changes (read-changes)}))
+
+(defn install-effect! [dispatch _args]
+  (install-rewrite! dispatch))
+
+(defn probe! [_dispatch _args]
+  {:dom/body? (boolean js/document.body)
+   :statsig/live? (boolean (live-statsig))
+   :statsig/bootstrap? (boolean (bootstrap-statsig))})
+
+(defn clear-watch! [_dispatch [timer]]
+  (when timer
+    (js/clearInterval timer)))
+
+(defn reload-page! [_dispatch _args]
   (js/setTimeout #(.reload js/location) 50))
+
+(defn arm-watch!
+  "Polls until Statsig appears or the watch expires."
+  [dispatch _args]
+  (let [timer (js/setInterval #(dispatch [[:page/ax.look]]) 200)]
+    (js/setTimeout #(dispatch [[:page/ax.expire timer]]) 90000)
+    timer))
 
 (def effect-handlers
   {:ui/fx.render render-ui!
    :storage/fx.write write-storage!
    :page/fx.honor honor-effect!
    :page/fx.load load-page!
-   :page/fx.reload reload-page!})
+   :page/fx.reload reload-page!
+   :page/fx.install install-effect!
+   :page/fx.probe probe!
+   :page/fx.clear-watch clear-watch!
+   :page/fx.arm arm-watch!})
 
-(defn perform-effect! [_dispatch [effect & args]]
+(defn perform-effect! [dispatch [effect & args]]
   (if-let [handler (get effect-handlers effect)]
-    (handler args)
+    (handler dispatch args)
     :uf/unhandled-fx))
 
 (defn execute-effect! [dispatch fx]
@@ -574,54 +700,10 @@
 (defn event-handler [replicant-data actions]
   (dispatch! actions replicant-data))
 
-(defn parse-json [original text reviver]
-  (if (undefined? reviver)
-    (.call original js/JSON text)
-    (.call original js/JSON text reviver)))
-
-(defn with-saved-overrides
-  "Applies saved overrides to parsed bootstrap payload."
-  [value]
-  (when-let [statsig (when (some? value) (.-statsigPayload value))]
-    (apply-changes! statsig (read-changes)))
-  value)
-
-(defn install-rewrite!
-  "Rewrites parsed JSON when it carries a Statsig payload."
-  []
-  (when-not (.-__pezPageChoices js/JSON)
-    (let [original (.-parse js/JSON)]
-      (reset! !parse original)
-      (set! (.-parse js/JSON) (fn [text reviver]
-                                (with-saved-overrides (parse-json original text reviver))))
-      (set! (.-__pezPageChoices js/JSON) true))))
-
-(defonce !started? (atom false))
-
-(defn show!
-  "Shows the experiment panel without re-booting."
+(defn kick!
+  "Installs the parse hook at once, and opens the panel if Statsig shows up."
   []
   (r/set-dispatch! event-handler)
-  (dispatch! [[:panel/ax.show]]))
-
-(defn start!
-  "Boots once, then only re-opens the panel."
-  []
-  (if @!started?
-    (show!)
-    (do
-      (reset! !started? true)
-      (install-rewrite!)
-      (r/set-dispatch! event-handler)
-      (dispatch! [[:page/ax.boot]]))))
-
-(defn kick!
-  "Starts when the document is ready."
-  []
-  (if js/document.body
-    (start!)
-    (when-not (.-__pezPageChoicesWait js/document)
-      (set! (.-__pezPageChoicesWait js/document) true)
-      (.addEventListener js/document "DOMContentLoaded" start!))))
+  (dispatch! [[:page/ax.kick]]))
 
 (kick!)
