@@ -215,15 +215,22 @@
   (copy-config-bucket! (.-layer_configs from) (.-layer_configs to))
   to)
 
+(defn counted-label
+  "Joins a count with its singular or plural word."
+  [n one many]
+  (str n " " (if (= 1 n) one many)))
+
 (defn status-line
-  "How many settings differ from what the page sent."
+  "How many experiments and settings are on the page, and how many settings differ."
   [ready? experiments changes]
-  (let [n (change-count changes)]
-    (cond
-      (not ready?) "Reading the experiments on this page."
-      (zero? (count experiments)) "No experiments arrived with this page."
-      (= 1 n) "1 override."
-      :else (str n " overrides."))))
+  (if ready?
+    (str (counted-label (count experiments) "experiment" "experiments")
+         ". "
+         (counted-label (count (mapcat :experiment/settings experiments)) "setting" "settings")
+         ". "
+         (counted-label (change-count changes) "override" "overrides")
+         ".")
+    "Reading the experiments on this page."))
 
 (defn field-style []
   {:font-family "inherit"
@@ -339,6 +346,17 @@
    (when (pos? (change-count changes))
      (text-button "Put the page's experiments back" [:page/ax.restore]))])
 
+(defn panel-top
+  "Title and counts, kept in view while the list scrolls."
+  [ready? experiments changes]
+  [:div {:style {:flex-shrink "0"
+                 :padding "12px 14px"
+                 :background paper
+                 :border-bottom (str "1px solid " line)}}
+   (panel-header)
+   [:p {:style {:margin "12px 0 0" :color quiet}}
+    (status-line ready? experiments changes)]])
+
 (defn launcher
   "Fixed button that opens the experiment panel."
   []
@@ -369,17 +387,17 @@
   (when open?
     [:div {:style {:position "fixed" :top "12px" :right "12px"
                    :z-index "2147483646" :width "340px"
-                   :max-height "calc(100vh - 24px)" :overflow "auto"
-                   :box-sizing "border-box" :padding "12px 14px 16px"
+                   :max-height "calc(100vh - 24px)" :overflow "hidden"
+                   :display "flex" :flex-direction "column"
+                   :box-sizing "border-box" :padding "0"
                    :background paper :color ink :font-family page-face
                    :font-size "14px" :line-height "1.4"
                    :border (str "1px solid " line) :border-radius "16px"
                    :box-shadow "0 8px 28px rgba(0, 0, 0, 0.08)"}}
-     (panel-header)
-     [:p {:style {:margin "12px 0 0" :color quiet}}
-      (status-line ready? experiments changes)]
+     (panel-top ready? experiments changes)
      (when ready?
-       [:div
+       [:div {:style {:overflow "auto" :min-height "0" :flex "1"
+                      :padding "0 14px 16px"}}
         (experiment-list (with-titles experiments) changes)
         (panel-actions changes)])]))
 
