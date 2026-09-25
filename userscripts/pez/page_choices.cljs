@@ -29,7 +29,7 @@
    [:path {:d "M8.70701 8.00001L12.353 4.35401C12.548 4.15901 12.548 3.84201 12.353 3.64701C12.158 3.45201 11.841 3.45201 11.646 3.64701L8.00001 7.29301L4.35401 3.64701C4.15901 3.45201 3.84201 3.45201 3.64701 3.64701C3.45201 3.84201 3.45201 4.15901 3.64701 4.35401L7.29301 8.00001L3.64701 11.646C3.45201 11.841 3.45201 12.158 3.64701 12.353C3.74501 12.451 3.87301 12.499 4.00101 12.499C4.12901 12.499 4.25701 12.45 4.35501 12.353L8.00101 8.70701L11.647 12.353C11.745 12.451 11.873 12.499 12.001 12.499C12.129 12.499 12.257 12.45 12.355 12.353C12.55 12.158 12.55 11.841 12.355 11.646L8.70901 8.00001H8.70701Z"}]])
 
 (defonce !parse (atom (.-parse js/JSON)))
-(defonce !state (atom {:ready? false :open? true :experiments [] :changes {}}))
+(defonce !state (atom {:ready? false :open? false :experiments [] :changes {}}))
 (defonce !refresh (atom (fn [])))
 
 (defn chevron
@@ -117,17 +117,121 @@
     (.removeItem js/localStorage storage-key)
     (.setItem js/localStorage storage-key (js/JSON.stringify (clj->js changes)))))
 
+(def opt-out-key "__opt_out")
+(def opt-in-key "__opt_in")
+
+(defn opted-out?
+  "True when you have chosen to leave this experiment."
+  [changes id]
+  (true? (get-in changes [id opt-out-key])))
+
+(defn opted-in?
+  "True when you have chosen to join an experiment the page left you out of."
+  [changes id]
+  (true? (get-in changes [id opt-in-key])))
+
+(defn set-opt-out
+  "Records leaving or rejoining one experiment."
+  [changes id opt-out?]
+  (if opt-out?
+    (-> changes
+        (assoc-in [id opt-out-key] true)
+        (update id dissoc opt-in-key))
+    (let [params (dissoc (get changes id) opt-out-key)]
+      (if (seq params)
+        (assoc changes id params)
+        (dissoc changes id)))))
+
+(defn set-opt-in
+  "Records joining an experiment the page left you out of."
+  [changes id]
+  (-> (set-opt-out changes id false)
+      (assoc-in [id opt-in-key] true)))
+
+(defn opted-out?
+  "True when you have chosen to leave this experiment."
+  [changes id]
+  (true? (get-in changes [id opt-out-key])))
+
+(defn set-opt-out
+  "Records leaving or rejoining one experiment."
+  [changes id opt-out?]
+  (if opt-out?
+    (-> changes
+        (assoc-in [id opt-out-key] true)
+        (update id dissoc opt-in-key))
+    (let [params (dissoc (get changes id) opt-out-key)]
+      (if (seq params)
+        (assoc changes id params)
+        (dissoc changes id)))))
+
 (defn apply-changes!
   "Writes saved changes into the page data ChatGPT is about to read."
   [statsig changes]
   (let [configs (.-dynamic_configs statsig)]
     (doseq [[id params] changes]
       (when-let [config (aget configs id)]
-        (let [value (or (.-value config) (js-obj))]
-          (doseq [[param value* ] params]
-            (aset value param (clj->js value*)))
-          (set! (.-value config) value)))))
+        (cond
+          (opted-out? {id params} id)
+          (do
+            (set! (.-is_user_in_experiment config) false)
+            (set! (.-group_name config) nil)
+            (set! (.-value config) #js {}))
+
+          (opted-in? {id params} id)
+          (let [value (or (.-value config) (js-obj))]
+            (set! (.-is_user_in_experiment config) true)
+            (doseq [[param value*] (dissoc params opt-out-key opt-in-key)]
+              (aset value param (clj->js value*)))
+            (set! (.-value config) value))
+
+          :else
+          (let [value (or (.-value config) (js-obj))]
+            (doseq [[param value*] (dissoc params opt-out-key opt-in-key)]
+              (aset value param (clj->js value*)))
+            (set! (.-value config) value))))))
   statsig)
+
+(defn live-statsig
+  "The experiment data the running page is reading, when the page has it."
+  []
+  (when-let [statsig js/window.__STATSIG__]
+    (let [instances (.-instances statsig)
+          client-key (when instances (aget (js/Object.keys instances) 0))
+          client (when client-key (aget instances client-key))]
+      (when client
+        (.-_values (.-_values (.-_store client)))))))
+
+(defn script-statsig
+  "The experiment data as the page sent it."
+  []
+  (when-let [el (js/document.getElementById "client-bootstrap")]
+    (.-statsigPayload (.call @!parse js/JSON (.-textContent el)))))
+
+(defn copy-assignments!
+  "Copies each experiment's inclusion and settings from one payload onto another."
+  [from to]
+  (let [source (.-dynamic_configs from)
+        target (.-dynamic_configs to)
+        ids (js/Object.keys source)]
+    (dotimes [i (.-length ids)]
+      (let [id (aget ids i)
+            src (aget source id)
+            dst (aget target id)]
+        (when (and src dst)
+          (set! (.-is_user_in_experiment dst) (.-is_user_in_experiment src))
+          (set! (.-group_name dst) (.-group_name src))
+          (set! (.-value dst) (.-value src)))))))
+
+(defn honor-saved!
+  "Writes saved choices into the experiment data the page is reading."
+  []
+  (when-let [live (live-statsig)]
+    (let [changes (read-changes)]
+      (if (seq changes)
+        (apply-changes! live changes)
+        (when-let [original (script-statsig)]
+          (copy-assignments! original live))))))
 
 (defn install-rewrite!
   "Rewrites page data on parse, once, before ChatGPT reads it."
@@ -184,11 +288,17 @@
     changes))
 
 (defn remember-change!
-  "Remembers one setting. Returns the changes now saved."
+  "Remembers one setting and writes it into the page."
   [id param site next-value]
-  (let [changes (put-change (:changes @!state) id param site next-value)]
+  (let [experiment (first (filter #(= id (:id %)) (:experiments @!state)))
+        changes (put-change (:changes @!state) id param site next-value)
+        changes (if (or (not (:in-effect? experiment))
+                        (opted-out? (:changes @!state) id))
+                  (set-opt-in changes id)
+                  changes)]
     (write-changes! changes)
     (swap! !state assoc :changes changes)
+    (honor-saved!)
     changes))
 
 (defn reload!
@@ -197,11 +307,12 @@
   (js/setTimeout #(.reload js/location) 50))
 
 (defn restore-page!
-  "Forgets every change and reloads the page's own choices."
+  "Forgets every saved change and writes that into the page."
   []
   (write-changes! {})
   (swap! !state assoc :changes {})
-  (reload!))
+  (honor-saved!)
+  (@!refresh))
 
 (defn field-style []
   {:font-family "inherit"
@@ -303,21 +414,38 @@
       (setting-control commit editable? changes experiment setting)]]))
 
 (defn experiment-block
-  [commit editable? changes {:keys [title settings] :as experiment}]
-  [:section {:style {:display "flex" :flex-direction "column" :gap "8px"}}
-   [:h2 {:style {:margin "0"
-                 :font-family page-face
-                 :font-size "16px"
-                 :font-weight "600"
-                 :line-height "1.3"
-                 :color ink}}
-    title]
-   (if (seq settings)
-     [:div {:style {:display "flex" :flex-direction "column" :gap "8px"}}
-      (for [setting settings]
-        ^{:key (:param setting)}
-        (setting-row commit editable? changes experiment setting))]
-     [:p {:style {:margin "0" :color quiet}} "No settings in this experiment."])])
+  [commit set-opt changes {:keys [id title settings] :as experiment}]
+  (let [included? (:in-effect? experiment)
+        left? (opted-out? changes id)
+        joined? (opted-in? changes id)
+        in-use? (and (or included? joined?) (not left?))]
+    [:section {:style {:display "flex" :flex-direction "column" :gap "8px"}}
+     [:div {:style {:display "flex" :justify-content "space-between" :align-items "baseline" :gap "8px"}}
+      [:h2 {:style {:margin "0"
+                    :font-family page-face
+                    :font-size "16px"
+                    :font-weight "600"
+                    :line-height "1.3"
+                    :color ink}}
+       title]
+      [:button {:type "button"
+                :on {:click (fn [_] (set-opt id in-use?))}
+                :style {:font "inherit"
+                        :font-size "13px"
+                        :color ink
+                        :background "transparent"
+                        :border "none"
+                        :padding "0"
+                        :cursor "pointer"
+                        :text-decoration "underline"
+                        :text-underline-offset "3px"
+                        :flex-shrink "0"}}
+       (if in-use? "Opt out" "Opt in")]]
+     (when (seq settings)
+       [:div {:style {:display "flex" :flex-direction "column" :gap "8px"}}
+        (for [setting settings]
+          ^{:key (:param setting)}
+          (setting-row commit true changes experiment setting))])]))
 
 (defn text-button
   [label action]
@@ -365,11 +493,22 @@
    [:span {:style {:flex "1"}} title]
    [:span {:style {:color quiet :font-weight "500" :font-size "13px"}} (str count)]])
 
+(defn resting-experiments
+  "Experiments the page is not using, including ones you opted out of."
+  [experiments changes]
+  (let [included (filter :in-effect? experiments)
+        left (filter #(opted-out? changes (:id %)) included)
+        never-in (remove #(or (:in-effect? %)
+                              (opted-in? changes (:id %)))
+                        experiments)]
+    (with-titles (vec (concat never-in left)))))
+
 (defn panel
-  [{:keys [ready? open? open-groups experiments changes]} {:keys [commit reload restore hide toggle-group]}]
+  [{:keys [ready? open? open-groups experiments changes]} {:keys [commit set-opt reload restore hide toggle-group]}]
   (when open?
-    (let [editable (with-titles (filterv :in-effect? experiments))
-          resting (with-titles (filterv (complement :in-effect?) experiments))
+    (let [included (filterv :in-effect? experiments)
+          editable (with-titles (filterv #(not (opted-out? changes (:id %))) included))
+          resting (resting-experiments experiments changes)
           editable-open? (group-open? open-groups :editable)
           resting-open? (group-open? open-groups :resting)]
       [:div {:style {:position "fixed"
@@ -418,7 +557,7 @@
             [:div {:style {:display "flex" :flex-direction "column" :gap "16px" :margin-top "8px"}}
              (for [experiment editable]
                ^{:key (:id experiment)}
-               (experiment-block commit true changes experiment))])])
+               (experiment-block commit set-opt changes experiment))])])
        (when (and ready? (seq resting))
          [:div
           (disclosure resting-open? "Not in effect this visit" (count resting)
@@ -426,10 +565,10 @@
           (when resting-open?
             [:div {:style {:display "flex" :flex-direction "column" :gap "16px" :margin-top "4px"}}
              [:p {:style {:margin "0" :color quiet}}
-              "ChatGPT sent these with the page, and this visit is not part of them. They do not change what you see."]
+              "ChatGPT did not include you in these for this visit, or you opted out. The page is not using them. Opt in brings back one you left."]
              (for [experiment resting]
                ^{:key (:id experiment)}
-               (experiment-block commit false changes experiment))])])
+               (experiment-block commit set-opt changes experiment))])])
        (when ready?
          [:div {:style {:display "flex" :gap "16px" :margin-top "20px"}}
           (text-button "Reload" reload)
@@ -476,14 +615,19 @@
                              (@!refresh)))
         (.appendChild host button)
         (r/render button (ui/epupp-icon :size 22))
-        (paint-toolbar!)
-        (when-not (.-__pezPageChoicesWatch host)
-          (let [observer (js/MutationObserver.
-                          (fn [_ _]
-                            (when-not (js/document.getElementById toolbar-id)
-                              (ensure-toolbar!))))]
-            (set! (.-__pezPageChoicesWatch host) true)
-            (.observe observer host #js {:childList true})))))))
+        (paint-toolbar!)))))
+
+(defn watch-toolbar!
+  "Puts the toolbar icon back whenever ChatGPT redraws the sidebar."
+  []
+  (when (and js/document.body
+             (not (.-__pezPageChoicesBodyWatch js/document.body)))
+    (set! (.-__pezPageChoicesBodyWatch js/document.body) true)
+    (let [observer (js/MutationObserver.
+                    (fn [_ _]
+                      (when-not (js/document.getElementById toolbar-id)
+                        (ensure-toolbar!))))]
+      (.observe observer js/document.body #js {:childList true :subtree true}))))
 
 (defn render! []
   (reset! !refresh render!)
@@ -493,6 +637,12 @@
                          {:commit (fn [id param site next-value]
                                     (remember-change! id param site next-value)
                                     (render!))
+                          :set-opt (fn [id leave?]
+                                     (let [changes (set-opt-out (:changes @!state) id leave?)]
+                                       (write-changes! changes)
+                                       (swap! !state assoc :changes changes)
+                                       (honor-saved!))
+                                     (render!))
                           :reload reload!
                           :restore restore-page!
                           :toggle-group (fn [group]
@@ -549,7 +699,10 @@
 (install-rewrite!)
 
 (defn boot! []
+  (swap! !state assoc :open? false)
+  (honor-saved!)
   (pull!)
+  (watch-toolbar!)
   (when-not (js/document.getElementById "client-bootstrap")
     (watch-bootstrap!)))
 
