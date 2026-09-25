@@ -7,4 +7,5 @@
  {:gist/id "856da33ad095526551abdbb0f897ea93", :script/path "pez/youtube_finder.cljs", :gist/rev "5026ddb6a17c30b10a67ecf827d9d1768174bdf1"}
  {:gist/id "8fb1f19e1e481d25f56af5d9d76fa135", :script/path "pez/calva_io_darkmode.cljs", :gist/rev "e4299cad273e219f1de1254f13ecb69bf3bcad2f"}
  {:gist/id "6d6af685bcba5041e14086c32fed2744", :script/path "pez/gmail_yellow.cljs", :gist/rev "03d80941f9d1bbd1d397555bf6ecf2c399f349a4"}
+ {:gist/id "8c9e3b05a3500ad34ae59b14ba2bcf00", :script/path "pez/matrix.cljs", :gist/rev "1feccd606c7312995f598adacff77c5ba6603bd7"}
 ]

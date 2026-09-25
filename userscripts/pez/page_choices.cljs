@@ -1,7 +1,5 @@
 {:epupp/script-name "pez/page_choices.cljs"
- :epupp/auto-run-match ["https://chatgpt.com/*" "https://chat.openai.com/*"]
- :epupp/description "See the A/B experiments on this page, and change the ones this visit is in."
- :epupp/run-at "document-start"
+ :epupp/description "See this page's Statsig experiments, and change the ones this visit is in. Run it by hand."
  :epupp/inject ["scittle://replicant.js"
                 "epupp://epupp/ui.cljs"]}
 
@@ -13,7 +11,6 @@
 
 (def storage-key "pez.page-choices")
 (def panel-id "pez-page-choices")
-(def toolbar-id "pez-page-choices-toggle")
 
 (def ink "rgb(13, 13, 13)")
 (def paper "#ffffff")
@@ -22,6 +19,7 @@
 (def page-face "-apple-system-body, ui-sans-serif, -apple-system, system-ui, \"Segoe UI\", Helvetica, Arial, sans-serif")
 
 (defonce !parse (atom (.-parse js/JSON)))
+(defonce !sent (atom nil))
 (defonce !state (atom {:page/ready? false
                        :page/open? false
                        :page/experiments []
@@ -69,32 +67,40 @@
              [[] {}]
              experiments))))
 
+(defn experiment-from-config
+  "Builds one experiment map from a Statsig config entry."
+  [key obj]
+  (when (.-group_name obj)
+    (let [value (or (.-value obj) #js {})
+          names (js/Object.keys value)]
+      {:experiment/id (str (or (.-name obj) key))
+       :experiment/group (.-group_name obj)
+       :experiment/in-effect? (boolean (and (.-is_experiment_active obj)
+                                            (.-is_user_in_experiment obj)))
+       :experiment/settings
+       (mapv (fn [j]
+               (let [param (aget names j)
+                     site (aget value param)]
+                 {:setting/param param
+                  :setting/label (humanize param)
+                  :setting/kind (setting-kind site)
+                  :setting/site site}))
+             (range (.-length names)))})))
+
 (defn read-experiments
   "Reads every experiment the page sent."
   [statsig]
-  (let [configs (.-dynamic_configs statsig)
-        keys (js/Object.keys configs)]
-    (with-titles
-     (vec
-      (keep (fn [i]
-              (let [obj (aget configs (aget keys i))]
-                (when (.-group_name obj)
-                  (let [value (or (.-value obj) #js {})
-                        names (js/Object.keys value)]
-                    {:experiment/id (str (.-name obj))
-                     :experiment/group (.-group_name obj)
-                     :experiment/in-effect? (boolean (and (.-is_experiment_active obj)
-                                                          (.-is_user_in_experiment obj)))
-                     :experiment/settings
-                     (mapv (fn [j]
-                             (let [param (aget names j)
-                                   site (aget value param)]
-                               {:setting/param param
-                                :setting/label (humanize param)
-                                :setting/kind (setting-kind site)
-                                :setting/site site}))
-                           (range (.-length names)))}))))
-            (range (.-length keys)))))))
+  (with-titles
+   (vec
+    (mapcat
+     (fn [configs]
+       (when configs
+         (let [keys (js/Object.keys configs)]
+           (keep (fn [i]
+                   (let [key (aget keys i)]
+                     (experiment-from-config key (aget configs key))))
+                 (range (.-length keys))))))
+     [(.-dynamic_configs statsig) (.-layer_configs statsig)]))))
 
 (defn read-changes
   "Returns saved setting overrides."
@@ -136,12 +142,6 @@
   [override]
   (not= (shown-value override) (:setting/site override)))
 
-(comment "duplicate change-count")
-
-(comment "duplicate shown-value")
-
-(comment "duplicate changed?")
-
 (defn write-config-params!
   "Writes one experiment's overrides onto its config."
   [config params]
@@ -155,9 +155,11 @@
 (defn apply-changes!
   "Writes saved setting values into experiment data."
   [statsig changes]
-  (let [configs (.-dynamic_configs statsig)]
+  (let [dynamic (.-dynamic_configs statsig)
+        layer (.-layer_configs statsig)]
     (doseq [[id params] changes]
-      (when-let [config (aget configs id)]
+      (when-let [config (or (when dynamic (aget dynamic id))
+                            (when layer (aget layer id)))]
         (write-config-params! config params))))
   statsig)
 
@@ -165,32 +167,53 @@
   "The experiment data the running page is reading."
   []
   (when-let [statsig js/window.__STATSIG__]
-    (let [instances (.-instances statsig)
-          client-key (when instances (aget (js/Object.keys instances) 0))
-          client (when client-key (aget instances client-key))]
+    (let [client (or (.-firstInstance statsig)
+                     (when-let [instances (.-instances statsig)]
+                       (let [keys (js/Object.keys instances)]
+                         (when (pos? (.-length keys))
+                           (aget instances (aget keys 0))))))]
       (when client
-        (.-_values (.-_values (.-_store client)))))))
+        (let [store (.-_store client)
+              values (when store (.-_values store))]
+          (when values (.-_values values)))))))
 
-(defn script-statsig
-  "The experiment data as the page sent it."
+(defn bootstrap-statsig
+  "Reads Statsig payload from the page bootstrap script."
   []
   (when-let [el (js/document.getElementById "client-bootstrap")]
-    (.-statsigPayload (.call @!parse js/JSON (.-textContent el)))))
+    (when-let [value (.call @!parse js/JSON (.-textContent el))]
+      (.-statsigPayload value))))
+
+(defn sent-statsig!
+  "Returns original Statsig values for reading experiments."
+  []
+  (or (bootstrap-statsig)
+      @!sent
+      (when-let [live (live-statsig)]
+        (let [cloned (.call @!parse js/JSON (js/JSON.stringify live))]
+          (reset! !sent cloned)
+          cloned))))
+
+(defn copy-config-bucket!
+  "Copies experiment assignments for one config bucket."
+  [source target]
+  (when (and source target)
+    (let [ids (js/Object.keys source)]
+      (dotimes [i (.-length ids)]
+        (let [id (aget ids i)
+              src (aget source id)
+              dst (aget target id)]
+          (when (and src dst)
+            (set! (.-is_user_in_experiment dst) (.-is_user_in_experiment src))
+            (set! (.-group_name dst) (.-group_name src))
+            (set! (.-value dst) (js/Object.assign #js {} (.-value src)))))))))
 
 (defn copy-assignments!
   "Copies each experiment from one payload onto another."
   [from to]
-  (let [source (.-dynamic_configs from)
-        target (.-dynamic_configs to)
-        ids (js/Object.keys source)]
-    (dotimes [i (.-length ids)]
-      (let [id (aget ids i)
-            src (aget source id)
-            dst (aget target id)]
-        (when (and src dst)
-          (set! (.-is_user_in_experiment dst) (.-is_user_in_experiment src))
-          (set! (.-group_name dst) (.-group_name src))
-          (set! (.-value dst) (js/Object.assign #js {} (.-value src))))))))
+  (copy-config-bucket! (.-dynamic_configs from) (.-dynamic_configs to))
+  (copy-config-bucket! (.-layer_configs from) (.-layer_configs to))
+  to)
 
 (defn status-line
   "How many settings differ from what the page sent."
@@ -316,6 +339,31 @@
    (when (pos? (change-count changes))
      (text-button "Put the page's experiments back" [:page/ax.restore]))])
 
+(defn launcher
+  "Fixed button that opens the experiment panel."
+  []
+  [:button {:type "button"
+            :aria-label "Active A/B experiments"
+            :title "Active A/B experiments"
+            :on {:click [[:panel/ax.show]]}
+            :style {:position "fixed"
+                    :bottom "16px"
+                    :right "16px"
+                    :width "44px"
+                    :height "44px"
+                    :z-index "2147483646"
+                    :padding "0"
+                    :display "flex"
+                    :align-items "center"
+                    :justify-content "center"
+                    :background paper
+                    :color ink
+                    :border (str "1px solid " line)
+                    :border-radius "14px"
+                    :box-shadow "0 8px 28px rgba(0, 0, 0, 0.08)"
+                    :cursor "pointer"}}
+   (ui/epupp-icon :size 22)])
+
 (defn panel
   [{:page/keys [ready? open? experiments changes]}]
   (when open?
@@ -335,6 +383,13 @@
         (experiment-list (with-titles experiments) changes)
         (panel-actions changes)])]))
 
+(defn shell
+  "Shows the panel or the launcher button."
+  [state]
+  (if (:page/open? state)
+    (panel state)
+    (launcher)))
+
 (defn enrich-from-event [{:replicant/keys [js-event]} action]
   (walk/postwalk
    (fn [x]
@@ -347,11 +402,10 @@
   (enrich-from-event replicant-data action))
 
 (defn with-render
-  "Commits state and asks the panel and toolbar to show it."
+  "Commits state and asks the panel to show it."
   [db extra-fxs]
   {:uf/db db
-   :uf/fxs (into extra-fxs [[:ui/fx.render db]
-                            [:toolbar/fx.sync (:page/open? db)]])})
+   :uf/fxs (into extra-fxs [[:ui/fx.render db]])})
 
 (defn commit-setting
   "Saves one override and writes it into the page."
@@ -374,8 +428,8 @@
   [state _uf-data action]
   (let [[op & args] action]
     (case op
-      :panel/ax.toggle
-      (with-render (update state :page/open? not) [])
+      :panel/ax.show
+      (with-render (assoc state :page/open? true) [])
 
       :panel/ax.close
       (with-render (assoc state :page/open? false) [])
@@ -401,67 +455,25 @@
       :page/ax.loaded
       (let [[{:page/keys [experiments changes]}] args
             db {:page/ready? true
-                :page/open? (boolean (:page/open? state))
+                :page/open? true
                 :page/experiments (or experiments [])
                 :page/changes (or changes {})}]
         (with-render db [[:page/fx.honor changes]]))
 
-      :toolbar/ax.sync
-      {:uf/fxs [[:toolbar/fx.sync (:page/open? state)]]}
-
       :uf/unhandled-ax)))
 
-(comment "Earlier action handler, replaced by with-render.")
-
-(declare dispatch!)
-
-(defn toolbar-host
-  "The column of icons in ChatGPT's left toolbar."
-  []
-  (when-let [nav (js/document.querySelector "nav")]
-    (let [buttons (.querySelectorAll nav "button")
-          parents (keep #(.-parentElement (aget buttons %))
-                         (range (.-length buttons)))
-          counts (frequencies parents)]
-      (when (seq counts)
-        (first (apply max-key val counts))))))
-
-(defn paint-toolbar! [open?]
-  (when-let [button (js/document.getElementById toolbar-id)]
-    (set! (.. button -style -background)
-          (if open? "rgba(13, 13, 13, 0.06)" "transparent"))))
-
-(defn ensure-toolbar! [open?]
-  (if-let [button (js/document.getElementById toolbar-id)]
-    (do
-      (when-let [host (toolbar-host)]
-        (when-not (identical? (.-parentElement button) host)
-          (.appendChild host button)))
-      (paint-toolbar! open?))
-    (when-let [host (toolbar-host)]
-      (let [button (js/document.createElement "button")]
-        (set! (.-id button) toolbar-id)
-        (set! (.-type button) "button")
-        (set! (.-title button) "Active A/B experiments")
-        (set! (.-ariaLabel button) "Active A/B experiments")
-        (set! (.. button -style -cssText)
-              "width:36px;height:36px;border:none;border-radius:10px;padding:0;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;color:rgb(13,13,13);")
-        (.addEventListener button "click"
-                           (fn [event]
-                             (.stopPropagation event)
-                             (dispatch! [[:panel/ax.toggle]])))
-        (.appendChild host button)
-        (r/render button (ui/epupp-icon :size 22))
-        (paint-toolbar! open?)))))
-
-(defn honor! [changes]
+(defn honor!
+  "Copies original assignments, then applies overrides."
+  [changes]
   (when-let [live (live-statsig)]
-    (when-let [original (script-statsig)]
+    (when-let [original (sent-statsig!)]
       (copy-assignments! original live))
     (when (seq changes)
       (apply-changes! live changes))))
 
-(defn render-ui! [[db]]
+(defn render-ui!
+  "Mounts the panel root and renders the shell."
+  [[db]]
   (let [root (or (js/document.getElementById panel-id)
                  (when js/document.body
                    (let [el (js/document.createElement "div")]
@@ -469,10 +481,7 @@
                      (.appendChild js/document.body el)
                      el)))]
     (when root
-      (r/render root (or (panel db) [:span])))))
-
-(defn sync-toolbar! [[open?]]
-  (ensure-toolbar! open?))
+      (r/render root (or (shell db) [:span])))))
 
 (defn write-storage! [[changes]]
   (if (empty? changes)
@@ -483,7 +492,7 @@
   (honor! changes))
 
 (defn load-page! [_args]
-  {:page/experiments (when-let [statsig (script-statsig)]
+  {:page/experiments (when-let [statsig (sent-statsig!)]
                        (read-experiments statsig))
    :page/changes (read-changes)})
 
@@ -492,7 +501,6 @@
 
 (def effect-handlers
   {:ui/fx.render render-ui!
-   :toolbar/fx.sync sync-toolbar!
    :storage/fx.write write-storage!
    :page/fx.honor honor-effect!
    :page/fx.load load-page!
@@ -553,17 +561,15 @@
     (.call original js/JSON text)
     (.call original js/JSON text reviver)))
 
-(defn statsig-payload [value]
-  (when (some? value)
-    (.-statsigPayload value)))
-
-(defn with-saved-overrides [value]
-  (when-let [statsig (statsig-payload value)]
+(defn with-saved-overrides
+  "Applies saved overrides to parsed bootstrap payload."
+  [value]
+  (when-let [statsig (when (some? value) (.-statsigPayload value))]
     (apply-changes! statsig (read-changes)))
   value)
 
 (defn install-rewrite!
-  "Rewrites page data on parse, before ChatGPT reads it."
+  "Rewrites parsed JSON when it carries a Statsig payload."
   []
   (when-not (.-__pezPageChoices js/JSON)
     (let [original (.-parse js/JSON)]
@@ -572,25 +578,32 @@
                                 (with-saved-overrides (parse-json original text reviver))))
       (set! (.-__pezPageChoices js/JSON) true))))
 
-(defn watch-toolbar!
-  "Puts the toolbar icon back whenever ChatGPT redraws the sidebar."
+(defonce !started? (atom false))
+
+(defn show!
+  "Shows the experiment panel without re-booting."
   []
-  (when (and js/document.body
-             (not (.-__pezPageChoicesBodyWatch js/document.body)))
-    (set! (.-__pezPageChoicesBodyWatch js/document.body) true)
-    (let [observer (js/MutationObserver.
-                    (fn [_ _]
-                      (when-not (js/document.getElementById toolbar-id)
-                        (dispatch! [[:toolbar/ax.sync]]))))]
-      (.observe observer js/document.body #js {:childList true :subtree true}))))
-
-(defn boot! []
   (r/set-dispatch! event-handler)
-  (dispatch! [[:page/ax.boot]])
-  (watch-toolbar!))
+  (dispatch! [[:panel/ax.show]]))
 
-(install-rewrite!)
+(defn start!
+  "Boots once, then only re-opens the panel."
+  []
+  (if @!started?
+    (show!)
+    (do
+      (reset! !started? true)
+      (install-rewrite!)
+      (r/set-dispatch! event-handler)
+      (dispatch! [[:page/ax.boot]]))))
 
-(if js/document.body
-  (boot!)
-  (js/document.addEventListener "DOMContentLoaded" boot!))
+(defn kick!
+  "Starts when the document is ready."
+  []
+  (if js/document.body
+    (start!)
+    (when-not (.-__pezPageChoicesWait js/document)
+      (set! (.-__pezPageChoicesWait js/document) true)
+      (.addEventListener js/document "DOMContentLoaded" start!))))
+
+(kick!)
