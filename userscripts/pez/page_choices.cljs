@@ -27,7 +27,6 @@
                        :page/sent nil
                        :page/started? false
                        :page/saw-statsig? false
-                       :page/watching? false
                        :page/watch nil}))
 
 (defn close-icon
@@ -72,40 +71,36 @@
              [[] {}]
              experiments))))
 
+(def config-buckets ["dynamic_configs" "layer_configs"])
+
+(defn object-entries
+  "Pairs of key and value from a JS object."
+  [obj]
+  (when obj
+    (js/Object.entries obj)))
+
 (defn experiment-from-config
   "Builds one experiment map from a Statsig config entry."
   [key obj]
   (when (.-group_name obj)
-    (let [value (or (.-value obj) #js {})
-          names (js/Object.keys value)]
+    (let [value (or (.-value obj) #js {})]
       {:experiment/id (str (or (.-name obj) key))
        :experiment/group (.-group_name obj)
-       :experiment/in-effect? (boolean (and (.-is_experiment_active obj)
-                                            (.-is_user_in_experiment obj)))
        :experiment/settings
-       (mapv (fn [j]
-               (let [param (aget names j)
-                     site (aget value param)]
-                 {:setting/param param
-                  :setting/label (humanize param)
-                  :setting/kind (setting-kind site)
-                  :setting/site site}))
-             (range (.-length names)))})))
+       (mapv (fn [[param site]]
+               {:setting/param param
+                :setting/label (humanize param)
+                :setting/kind (setting-kind site)
+                :setting/site site})
+             (object-entries value))})))
 
 (defn read-experiments
   "Reads every experiment the page sent."
   [statsig]
   (with-titles
    (vec
-    (mapcat
-     (fn [configs]
-       (when configs
-         (let [keys (js/Object.keys configs)]
-           (keep (fn [i]
-                   (let [key (aget keys i)]
-                     (experiment-from-config key (aget configs key))))
-                 (range (.-length keys))))))
-     [(.-dynamic_configs statsig) (.-layer_configs statsig)]))))
+    (keep (fn [[k obj]] (experiment-from-config k obj))
+          (mapcat #(object-entries (aget statsig %)) config-buckets)))))
 
 (defn read-changes
   "Returns saved setting overrides."
@@ -160,12 +155,12 @@
 (defn apply-changes!
   "Writes saved setting values into experiment data."
   [statsig changes]
-  (let [dynamic (.-dynamic_configs statsig)
-        layer (.-layer_configs statsig)]
-    (doseq [[id params] changes]
-      (when-let [config (or (when dynamic (aget dynamic id))
-                            (when layer (aget layer id)))]
-        (write-config-params! config params))))
+  (doseq [[id params] changes]
+    (when-let [config (some (fn [bucket]
+                              (some-> (aget statsig bucket)
+                                      (aget id)))
+                            config-buckets)]
+      (write-config-params! config params)))
   statsig)
 
 (defn statsig-client
@@ -197,21 +192,17 @@
   "Copies experiment assignments for one config bucket."
   [source target]
   (when (and source target)
-    (let [ids (js/Object.keys source)]
-      (dotimes [i (.-length ids)]
-        (let [id (aget ids i)
-              src (aget source id)
-              dst (aget target id)]
-          (when (and src dst)
-            (set! (.-is_user_in_experiment dst) (.-is_user_in_experiment src))
-            (set! (.-group_name dst) (.-group_name src))
-            (set! (.-value dst) (js/Object.assign #js {} (.-value src)))))))))
+    (doseq [[id src] (object-entries source)]
+      (when-let [dst (aget target id)]
+        (set! (.-is_user_in_experiment dst) (.-is_user_in_experiment src))
+        (set! (.-group_name dst) (.-group_name src))
+        (set! (.-value dst) (js/Object.assign #js {} (.-value src)))))))
 
 (defn copy-assignments!
   "Copies each experiment from one payload onto another."
   [from to]
-  (copy-config-bucket! (.-dynamic_configs from) (.-dynamic_configs to))
-  (copy-config-bucket! (.-layer_configs from) (.-layer_configs to))
+  (doseq [bucket config-buckets]
+    (copy-config-bucket! (aget from bucket) (aget to bucket)))
   to)
 
 (defn counted-label
@@ -382,23 +373,22 @@
    (ui/epupp-icon :size 22)])
 
 (defn panel
-  [{:page/keys [ready? open? experiments changes]}]
-  (when open?
-    [:div {:style {:position "fixed" :top "12px" :right "12px"
-                   :z-index "2147483646" :width "340px"
-                   :max-height "calc(100vh - 24px)" :overflow "hidden"
-                   :display "flex" :flex-direction "column"
-                   :box-sizing "border-box" :padding "0"
-                   :background paper :color ink :font-family page-face
-                   :font-size "14px" :line-height "1.4"
-                   :border (str "1px solid " line) :border-radius "16px"
-                   :box-shadow "0 8px 28px rgba(0, 0, 0, 0.08)"}}
-     (panel-top ready? experiments changes)
-     (when ready?
-       [:div {:style {:overflow "auto" :min-height "0" :flex "1"
-                      :padding "0 14px 16px"}}
-        (experiment-list (with-titles experiments) changes)
-        (panel-actions changes)])]))
+  [{:page/keys [ready? experiments changes]}]
+  [:div {:style {:position "fixed" :top "12px" :right "12px"
+                 :z-index "2147483646" :width "340px"
+                 :max-height "calc(100vh - 24px)" :overflow "hidden"
+                 :display "flex" :flex-direction "column"
+                 :box-sizing "border-box" :padding "0"
+                 :background paper :color ink :font-family page-face
+                 :font-size "14px" :line-height "1.4"
+                 :border (str "1px solid " line) :border-radius "16px"
+                 :box-shadow "0 8px 28px rgba(0, 0, 0, 0.08)"}}
+   (panel-top ready? experiments changes)
+   (when ready?
+     [:div {:style {:overflow "auto" :min-height "0" :flex "1"
+                    :padding "0 14px 16px"}}
+      (experiment-list experiments changes)
+      (panel-actions changes)])])
 
 (defn shell
   "Shows the panel or the launcher button."
@@ -414,9 +404,6 @@
        (some-> js-event .-target .-value)
        x))
    action))
-
-(defn enrich-action [replicant-data action]
-  (enrich-from-event replicant-data action))
 
 (defn with-render
   "Commits state and asks the panel to show it."
@@ -471,7 +458,6 @@
                       :page/open? true
                       :page/started? true
                       :page/saw-statsig? true
-                      :page/watching? false
                       :page/watch nil
                       :page/sent sent
                       :page/experiments (or experiments [])
@@ -496,11 +482,11 @@
       :page/ax.look
       (cond
         (and (:page/started? state) (:page/watch state))
-        {:uf/db (assoc state :page/watch nil :page/watching? false)
+        {:uf/db (assoc state :page/watch nil)
          :uf/fxs [[:page/fx.clear-watch (:page/watch state)]]}
 
         (:page/started? state)
-        {:uf/db state}
+        nil
 
         :else
         {:uf/fxs [[:page/fx.probe]]
@@ -517,7 +503,7 @@
           (with-render (assoc db :page/open? true) [])
 
           (and found? (:dom/body? probe))
-          (let [db* (assoc db :page/started? true :page/watching? false :page/watch nil)
+          (let [db* (assoc db :page/started? true :page/watch nil)
                 fxs (cond-> []
                       (:page/watch state) (conj [:page/fx.clear-watch (:page/watch state)])
                       true (conj [:page/fx.load (:page/sent state)]))]
@@ -525,12 +511,11 @@
              :uf/fxs fxs
              :uf/dxs [[:page/ax.loaded :uf/prev-result]]})
 
-          (:page/watching? state)
+          (:page/watch state)
           {:uf/db db}
 
           :else
-          {:uf/db (assoc db :page/watching? true)
-           :uf/fxs [[:page/fx.arm]]
+          {:uf/fxs [[:page/fx.arm]]
            :uf/dxs [[:page/ax.armed :uf/prev-result]]}))
 
       :page/ax.armed
@@ -542,15 +527,15 @@
       :page/ax.expire
       (let [timer (first args)]
         (if (= timer (:page/watch state))
-          {:uf/db (assoc state :page/watch nil :page/watching? false)
+          {:uf/db (assoc state :page/watch nil)
            :uf/fxs [[:page/fx.clear-watch timer]]}
-          {:uf/db state}))
+          nil))
 
       :uf/unhandled-ax)))
 
 (defn honor!
   "Copies original assignments, then applies overrides."
-  [sent changes]
+  [_dispatch [sent changes]]
   (when-let [live (live-statsig)]
     (when-let [original (or (bootstrap-statsig) sent)]
       (copy-assignments! original live))
@@ -572,7 +557,7 @@
 
 (defn install-rewrite!
   "Rewrites parsed JSON when it carries a Statsig payload."
-  [dispatch]
+  [dispatch _args]
   (let [original (or (.-__pezOriginalParse js/JSON)
                      (when-not (.-__pezPageChoices js/JSON)
                        (.-parse js/JSON)))]
@@ -600,9 +585,6 @@
     (.removeItem js/localStorage storage-key)
     (.setItem js/localStorage storage-key (js/JSON.stringify (clj->js changes)))))
 
-(defn honor-effect! [_dispatch [sent changes]]
-  (honor! sent changes))
-
 (defn clone-values
   [values]
   (.call (original-parse) js/JSON (js/JSON.stringify values)))
@@ -616,9 +598,6 @@
     {:page/sent snapshot
      :page/experiments (when source (read-experiments source))
      :page/changes (read-changes)}))
-
-(defn install-effect! [dispatch _args]
-  (install-rewrite! dispatch))
 
 (defn probe! [_dispatch _args]
   {:dom/body? (boolean js/document.body)
@@ -642,10 +621,10 @@
 (def effect-handlers
   {:ui/fx.render render-ui!
    :storage/fx.write write-storage!
-   :page/fx.honor honor-effect!
+   :page/fx.honor honor!
    :page/fx.load load-page!
    :page/fx.reload reload-page!
-   :page/fx.install install-effect!
+   :page/fx.install install-rewrite!
    :page/fx.probe probe!
    :page/fx.clear-watch clear-watch!
    :page/fx.arm arm-watch!})
@@ -688,7 +667,7 @@
   ([actions] (dispatch! actions nil))
   ([actions replicant-data]
    (let [uf-data {:uf/replicant-data replicant-data}
-         enriched (mapv #(enrich-action replicant-data %) actions)
+         enriched (mapv #(enrich-from-event replicant-data %) actions)
          {:uf/keys [db fxs dxs]} (handle-actions @!state uf-data enriched)]
      (when (some? db)
        (reset! !state db))
