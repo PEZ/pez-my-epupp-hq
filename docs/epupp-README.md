@@ -5,7 +5,7 @@
 
 # Epupp: Live Tamper your Web
 
-A web browser extension that lets you tamper with web pages, live and/or with userscripts.
+A web browser extension that lets you tamper with web pages, live and/or with userscripts. Powered by [Scittle](https://github.com/babashka/scittle)
 
 <div align="center">
   <a href="https://www.youtube.com/watch?v=CuEWN5yYVa8">
@@ -357,16 +357,18 @@ CSS files can also be declared in `:epupp/inject`. Any URL ending in `.css` is i
 ```clojure
 {:epupp/script-name "my/styled_widget.cljs"
  :epupp/inject ["scittle://replicant.js"
-                "epupp://my/styles.css"]}
+                "https://example.com/my-styles.css"]}
 ```
 
-`epupp://` CSS files are resolved from the extension's `userscripts/` directory. External CSS URLs (`https://`) are also supported. CSS files are deduplicated per page.
+External CSS URLs are supported alongside `scittle://` and `epupp://` dependencies. CSS files are deduplicated per page.
 
 **Built-in Epupp libraries:**
 
 | Inject URL | Namespace | Description |
 |------------|-----------|-------------|
 | `epupp://epupp/ui.cljs` | `epupp.ui` | Epupp branding components: icon, header, banner hiccup |
+| `epupp://epupp/storage.cljs` | `epupp.storage` | User key-value storage in extension (`get`/`set!`/`remove!`/`keys`/`clear!`) |
+| `epupp://epupp/tools.cljs` | `epupp.tools` | Element and viewport screenshot capture |
 
 Built-in libraries are always available - just add the inject URL and require the namespace.
 
@@ -378,11 +380,12 @@ These namespaces are automatically available when the REPL connects - no `:epupp
 |-----------|-------------|
 | `epupp.repl` | REPL utilities including `manifest!` for library loading |
 | `epupp.fs` | File system operations: `ls`, `show`, `save!`, `mv!`, `rm!` |
-| `epupp.tools` | Element and viewport screenshot capture |
+| `epupp.storage` | User key-value storage (also available via inject) |
+| `epupp.tools` | Element and viewport screenshot capture (also available via inject) |
 
 #### `epupp.tools` - Capture Elements
 
-`epupp.tools` is available automatically when the REPL connects. Capture screenshots of DOM elements or the visible viewport as data URL images:
+`epupp.tools` is available automatically when the REPL connects. It can also be loaded via `epupp://epupp/tools.cljs` in `:epupp/inject`. Capture screenshots of DOM elements or the visible viewport as data URL images:
 
 ```clojure
 (require '[epupp.tools :as tools])
@@ -401,6 +404,27 @@ These namespaces are automatically available when the REPL connects - no `:epupp
 ```
 
 All three functions are `^:async` and return Promises. Options: `:format` (`"jpeg"` or `"png"`, default `"jpeg"`), `:quality` (0-100, default 75). Large data URLs can overwhelm the nREPL/WebSocket transport, killing the connection.
+
+#### `epupp.storage` - User Key-Value Storage
+
+`epupp.storage` is available automatically when the REPL connects. It can also be loaded via `epupp://epupp/storage.cljs` in `:epupp/inject`. Persist EDN-readable values in the extension's user storage bucket:
+
+```clojure
+(require '[epupp.storage :as storage])
+
+(defn ^:async demo-storage []
+  (await (storage/set! :my/settings {:ui/theme :theme/dark}))
+  {:got (await (storage/get :my/settings))
+   :keys (await (storage/keys))
+   :after-remove (do (await (storage/remove! :my/settings))
+                     (await (storage/get :my/settings)))
+   :keys-after-clear (do (await (storage/clear!))
+                         (await (storage/keys)))})
+
+(demo-storage)
+```
+
+Values must be EDN-readable. Storage shares the `chrome.storage.local` quota with scripts and settings.
 
 ### Library Namespaces
 
