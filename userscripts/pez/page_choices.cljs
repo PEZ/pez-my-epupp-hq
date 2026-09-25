@@ -3,7 +3,9 @@
  :epupp/description "See the A/B experiments on this page, and change the ones this visit is in."
  :epupp/run-at "document-start"
  :epupp/inject ["scittle://replicant.js"
-                "epupp://epupp/ui.cljs"]}
+                "epupp://epupp/ui.cljs"]
+ :epupp/gist "771e7578f07db07e9ebd35a6ed767192"
+ :epupp/gist-sync "0f05d4e54915ce5122d2e4e2b9c781588b7e4056"}
 
 (ns pez.page-choices
   (:require [clojure.string :as string]

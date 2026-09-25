@@ -59,6 +59,23 @@ bb diff pez                          # all scripts under pez/
 bb diff hq/hello_world.cljs          # specific script
 ```
 
+### `bb gist-sync`
+
+Compare userscripts with the gists listed in `gist_sync.edn`. With no arguments, print which script differs from its gist, which gist differs from its script, gists with no script, and scripts with no gist. One argument prints a diff. Add `--push` or `--pull` to write that pair. `--private` makes a newly created gist secret.
+
+A path that exists is a userscript. A 32-character hex string is a gist id. Anything else is not found.
+
+Push and pull record `:epupp/gist` and `:epupp/gist-sync` on the local script. Those two lines stay out of the gist, so the shared source is the script itself. `--pull` writes the local file and does not change the gist.
+
+```sh
+bb gist-sync
+bb gist-sync pez/element_printing.cljs
+bb gist-sync 3b0fdc406e7593eaaef609b6fb4a687d
+bb gist-sync pez/element_printing.cljs --push
+bb gist-sync 3f499d088a742386c5a42761c6c06c5a --pull
+bb gist-sync pez/page_choices.cljs --push --private
+```
+
 ### Path Arguments
 
 Path arguments are relative to `userscripts/`. Any argument not ending in `.cljs` is treated as a directory prefix and expanded to all matching scripts. So `bb diff pez` and `bb diff pez/` both work.
