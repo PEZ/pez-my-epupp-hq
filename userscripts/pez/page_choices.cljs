@@ -1,6 +1,6 @@
 {:epupp/script-name "pez/page_choices.cljs"
  :epupp/auto-run-match "*"
- :epupp/description "See this page's Statsig experiments, and change the ones this visit is in."
+ :epupp/description "See the Statsig switches on this page, and override them for this visit."
  :epupp/run-at "document-start"
  :epupp/inject ["scittle://replicant.js"
                 "epupp://epupp/ui.cljs"]}
@@ -27,7 +27,9 @@
                        :page/sent nil
                        :page/started? false
                        :page/saw-statsig? false
-                       :page/watch nil}))
+                       :page/watch nil
+                       :page/query ""
+                       :page/open-ids #{}}))
 
 (defn close-icon
   "Codicon close mark, the same one Epupp uses."
@@ -71,6 +73,8 @@
              [[] {}]
              experiments))))
 
+(def value-buckets ["feature_gates" "dynamic_configs" "layer_configs"])
+
 (def config-buckets ["dynamic_configs" "layer_configs"])
 
 (defn object-entries
@@ -79,28 +83,55 @@
   (when obj
     (js/Object.entries obj)))
 
-(defn experiment-from-config
-  "Builds one experiment map from a Statsig config entry."
+(defn read-gate
+  "Builds one gate map from a Statsig feature gate."
   [key obj]
-  (when (.-group_name obj)
-    (let [value (or (.-value obj) #js {})]
-      {:experiment/id (str (or (.-name obj) key))
-       :experiment/group (.-group_name obj)
-       :experiment/settings
-       (mapv (fn [[param site]]
-               {:setting/param param
-                :setting/label (humanize param)
-                :setting/kind (setting-kind site)
-                :setting/site site})
-             (object-entries value))})))
+  (let [id (str (or (.-name obj) key))]
+    {:experiment/id id
+     :experiment/kind :gate
+     :experiment/group id
+     :experiment/title id
+     :experiment/settings
+     [{:setting/param "value"
+       :setting/label "On"
+       :setting/kind :bool
+       :setting/site (boolean (.-value obj))}]}))
+
+(defn read-config
+  "Builds one config or layer map from a Statsig entry."
+  [kind key obj]
+  (let [id (str (or (.-name obj) key))]
+    {:experiment/id id
+     :experiment/kind kind
+     :experiment/group (or (.-group_name obj) id)
+     :experiment/settings
+     (mapv (fn [[param site]]
+             {:setting/param (str param)
+              :setting/label (humanize param)
+              :setting/kind (setting-kind site)
+              :setting/site site})
+           (object-entries (or (.-value obj) #js {})))}))
+
+(defn read-named
+  "Reads one config bucket into entry maps."
+  [kind statsig bucket]
+  (mapv (fn [[k obj]] (read-config kind k obj))
+        (object-entries (aget statsig bucket))))
 
 (defn read-experiments
-  "Reads every experiment the page sent."
+  "Reads gates, configs, and layers from a Statsig values object."
   [statsig]
-  (with-titles
-   (vec
-    (keep (fn [[k obj]] (experiment-from-config k obj))
-          (mapcat #(object-entries (aget statsig %)) config-buckets)))))
+  (when statsig
+    (vec
+     (concat
+      (sort-by :experiment/id
+               (mapv (fn [[k obj]] (read-gate k obj))
+                     (object-entries (.-feature_gates statsig))))
+      (with-titles
+        (vec
+         (sort-by (juxt :experiment/group :experiment/id)
+                  (concat (read-named :config statsig "dynamic_configs")
+                          (read-named :layer statsig "layer_configs")))))))))
 
 (defn read-changes
   "Returns saved setting overrides."
@@ -153,14 +184,16 @@
       (set! (.-value config) value))))
 
 (defn apply-changes!
-  "Writes saved setting values into experiment data."
+  "Writes saved overrides into gates, configs, and layers."
   [statsig changes]
-  (doseq [[id params] changes]
-    (when-let [config (some (fn [bucket]
-                              (some-> (aget statsig bucket)
-                                      (aget id)))
-                            config-buckets)]
-      (write-config-params! config params)))
+  (doseq [[id params] changes
+          bucket value-buckets
+          :let [entry (some-> (aget statsig bucket) (aget id))]
+          :when entry]
+    (if (= bucket "feature_gates")
+      (when (contains? params "value")
+        (set! (.-value entry) (boolean (get params "value"))))
+      (write-config-params! entry params)))
   statsig)
 
 (defn statsig-client
@@ -198,9 +231,18 @@
         (set! (.-group_name dst) (.-group_name src))
         (set! (.-value dst) (js/Object.assign #js {} (.-value src)))))))
 
+(defn copy-gates!
+  "Copies gate values from one payload onto another."
+  [source target]
+  (when (and source target)
+    (doseq [[id src] (object-entries source)]
+      (when-let [dst (aget target id)]
+        (set! (.-value dst) (.-value src))))))
+
 (defn copy-assignments!
-  "Copies each experiment from one payload onto another."
+  "Copies each gate, config, and layer from one payload onto another."
   [from to]
+  (copy-gates! (.-feature_gates from) (.-feature_gates to))
   (doseq [bucket config-buckets]
     (copy-config-bucket! (aget from bucket) (aget to bucket)))
   to)
@@ -211,16 +253,19 @@
   (str n " " (if (= 1 n) one many)))
 
 (defn status-line
-  "How many experiments and settings are on the page, and how many settings differ."
+  "How many switches are on the page, and how many settings differ."
   [ready? experiments changes]
   (if ready?
-    (str (counted-label (count experiments) "experiment" "experiments")
-         ". "
-         (counted-label (count (mapcat :experiment/settings experiments)) "setting" "settings")
-         ". "
-         (counted-label (change-count changes) "override" "overrides")
-         ".")
-    "Reading the experiments on this page."))
+    (let [by-kind (group-by :experiment/kind experiments)]
+      (str (counted-label (count (:gate by-kind)) "gate" "gates")
+           ". "
+           (counted-label (count (:config by-kind)) "config" "configs")
+           ". "
+           (counted-label (count (:layer by-kind)) "layer" "layers")
+           ". "
+           (counted-label (change-count changes) "override" "overrides")
+           "."))
+    "Reading the switches on this page."))
 
 (defn field-style []
   {:font-family "inherit"
@@ -289,23 +334,11 @@
          "Reset"])
       (setting-control override setting)]]))
 
-(defn experiment-block
-  [changes {:experiment/keys [title settings] :as experiment}]
-  [:section {:style {:display "flex" :flex-direction "column" :gap "8px"}}
-   [:h2 {:style {:margin "0" :font-family page-face :font-size "16px"
-                 :font-weight "600" :line-height "1.3" :color ink}}
-    title]
-   (when (seq settings)
-     [:div {:style {:display "flex" :flex-direction "column" :gap "8px"}}
-      (for [{:setting/keys [param] :as setting} settings]
-        ^{:key param}
-        (setting-row changes experiment setting))])])
-
 (defn panel-header []
   [:div {:style {:display "flex" :align-items "flex-start"
                  :justify-content "space-between" :gap "8px"}}
    [:div {:style {:min-width "0" :flex "1"}}
-    (ui/epupp-header :size 22 :title "Active A/B experiments" :tagline false)]
+    (ui/epupp-header :size 22 :title "Switches on this page" :tagline false)]
    [:button {:type "button" :aria-label "Close"
              :on {:click [[:panel/ax.close]]}
              :style {:width "28px" :height "28px" :padding "0" :border "none"
@@ -314,12 +347,57 @@
                      :justify-content "center" :flex-shrink "0"}}
     (close-icon :size 16)]])
 
-(defn experiment-list [experiments changes]
-  (when (seq experiments)
-    [:div {:style {:display "flex" :flex-direction "column" :gap "16px" :margin-top "16px"}}
-     (for [{:experiment/keys [id] :as experiment} experiments]
-       ^{:key id}
-       (experiment-block changes experiment))]))
+(defn entry-block
+  "A switch header. Its settings show only after it is opened."
+  [open-ids changes {:experiment/keys [id title settings] :as experiment}]
+  (let [open? (contains? open-ids id)
+        n (count (get changes id))]
+    [:section {:style {:display "flex" :flex-direction "column" :gap "8px"}}
+     [:button {:type "button"
+               :aria-expanded open?
+               :on {:click [[:page/ax.toggle id]]}
+               :style {:margin "0" :padding "0" :border "none" :background "transparent"
+                       :font-family page-face :font-size "16px" :font-weight "600"
+                       :line-height "1.3" :color ink :text-align "left" :cursor "pointer"}}
+      (str (if open? "\u25be " "\u25b8 ") title)
+      (when (pos? n)
+        (str " (" n ")"))]
+     (when (and open? (seq settings))
+       [:div {:style {:display "flex" :flex-direction "column" :gap "8px"}}
+        (for [{:setting/keys [param] :as setting} settings]
+          ^{:key param}
+          (setting-row changes experiment setting))])]))
+
+(defn experiment-list
+  "Gates, configs, and layers that match the filter."
+  [{:page/keys [query open-ids]} experiments changes]
+  (let [q (string/lower-case (string/trim (or query "")))
+        blank? (= "" q)
+        hit? (fn [text]
+               (string/includes? (string/lower-case (str text)) q))
+        matches? (fn [{:experiment/keys [id group settings]}]
+                   (or blank?
+                       (hit? group)
+                       (hit? id)
+                       (some #(or (hit? (:setting/param %))
+                                  (hit? (:setting/label %)))
+                             settings)))
+        shown (filter matches? experiments)
+        by-kind (group-by :experiment/kind shown)
+        section (fn [title entries row]
+                  (when (seq entries)
+                    [:section {:style {:display "flex" :flex-direction "column" :gap "12px"}}
+                     [:h2 {:style {:margin "0" :font-family page-face :font-size "13px"
+                                   :font-weight "600" :letter-spacing "0.04em"
+                                   :text-transform "uppercase" :color quiet}}
+                      (str title " (" (count entries) ")")]
+                     (for [experiment entries]
+                       ^{:key (:experiment/id experiment)}
+                       (row experiment))]))]
+    [:div {:style {:display "flex" :flex-direction "column" :gap "20px" :margin-top "16px"}}
+     (section "Gates" (:gate by-kind) #(entry-block open-ids changes %))
+     (section "Configs" (:config by-kind) #(entry-block open-ids changes %))
+     (section "Layers" (:layer by-kind) #(entry-block open-ids changes %))]))
 
 (defn text-button [label action]
   [:button {:type "button"
@@ -334,25 +412,37 @@
   [:div {:style {:display "flex" :gap "16px" :margin-top "20px"}}
    (text-button "Reload" [:page/ax.reload])
    (when (pos? (change-count changes))
-     (text-button "Put the page's experiments back" [:page/ax.restore]))])
+     (text-button "Put the page's switches back" [:page/ax.restore]))])
+
+(defn query-field
+  "Filters the switch list. Empty text shows the full set."
+  [query]
+  [:input {:type "search"
+           :value (or query "")
+           :placeholder "Filter"
+           :aria-label "Filter switches"
+           :on {:input [[:page/ax.query :event/target.value]]}
+           :style (assoc (field-style) :width "100%" :box-sizing "border-box" :margin-top "12px")}])
 
 (defn panel-top
-  "Title and counts, kept in view while the list scrolls."
-  [ready? experiments changes]
+  "Title, counts, and filter, kept in view while the list scrolls."
+  [ready? experiments changes query]
   [:div {:style {:flex-shrink "0"
                  :padding "12px 14px"
                  :background paper
                  :border-bottom (str "1px solid " line)}}
    (panel-header)
    [:p {:style {:margin "12px 0 0" :color quiet}}
-    (status-line ready? experiments changes)]])
+    (status-line ready? experiments changes)]
+   (when ready?
+     (query-field query))])
 
 (defn launcher
-  "Fixed button that opens the experiment panel."
+  "Fixed button that opens the switch panel."
   []
   [:button {:type "button"
-            :aria-label "Active A/B experiments"
-            :title "Active A/B experiments"
+            :aria-label "Switches on this page"
+            :title "Switches on this page"
             :on {:click [[:panel/ax.show]]}
             :style {:position "fixed"
                     :bottom "16px"
@@ -373,7 +463,7 @@
    (ui/epupp-icon :size 22)])
 
 (defn panel
-  [{:page/keys [ready? experiments changes]}]
+  [{:page/keys [ready? experiments changes query] :as state}]
   [:div {:style {:position "fixed" :top "12px" :right "12px"
                  :z-index "2147483646" :width "340px"
                  :max-height "calc(100vh - 24px)" :overflow "hidden"
@@ -383,11 +473,11 @@
                  :font-size "14px" :line-height "1.4"
                  :border (str "1px solid " line) :border-radius "16px"
                  :box-shadow "0 8px 28px rgba(0, 0, 0, 0.08)"}}
-   (panel-top ready? experiments changes)
+   (panel-top ready? experiments changes query)
    (when ready?
      [:div {:style {:overflow "auto" :min-height "0" :flex "1"
                     :padding "0 14px 16px"}}
-      (experiment-list experiments changes)
+      (experiment-list state experiments changes)
       (panel-actions changes)])])
 
 (defn shell
@@ -453,16 +543,23 @@
       {:uf/fxs [[:page/fx.reload]]}
 
       :page/ax.loaded
-      (let [[{:page/keys [sent experiments changes]}] args]
-        (with-render {:page/ready? true
-                      :page/open? true
-                      :page/started? true
-                      :page/saw-statsig? true
-                      :page/watch nil
-                      :page/sent sent
-                      :page/experiments (or experiments [])
-                      :page/changes (or changes {})}
-                     [[:page/fx.honor sent changes]]))
+      (let [{:page/keys [sent experiments changes]} (first args)]
+        (when (and (seq experiments)
+                   (or (not (:page/ready? state))
+                       (> (count experiments) (count (:page/experiments state)))))
+          (with-render (assoc state
+                              :page/ready? true
+                              :page/open? (if (:page/ready? state)
+                                            (:page/open? state)
+                                            true)
+                              :page/started? true
+                              :page/saw-statsig? true
+                              :page/watch nil
+                              :page/sent sent
+                              :page/experiments experiments
+                              :page/changes (or changes {}))
+                       [[:page/fx.clear-watch (:page/watch state)]
+                        [:page/fx.honor sent changes]])))
 
       :page/ax.kick
       (if (:page/started? state)
@@ -474,7 +571,9 @@
       :page/ax.saw-statsig
       (let [db (assoc state :page/saw-statsig? true)]
         (if (:page/started? state)
-          {:uf/db db}
+          {:uf/db db
+           :uf/fxs [[:page/fx.load (:page/sent db)]]
+           :uf/dxs [[:page/ax.loaded :uf/prev-result]]}
           {:uf/db db
            :uf/fxs [[:page/fx.probe]]
            :uf/dxs [[:page/ax.probed :uf/prev-result]]}))
@@ -531,13 +630,27 @@
            :uf/fxs [[:page/fx.clear-watch timer]]}
           nil))
 
+      :page/ax.query
+      (with-render (assoc state :page/query (or (first args) "")) [])
+
+      :page/ax.toggle
+      (let [id (first args)
+            open (:page/open-ids state #{})]
+        (with-render (assoc state :page/open-ids
+                            (if (contains? open id)
+                              (disj open id)
+                              (conj open id)))
+                     []))
+
       :uf/unhandled-ax)))
 
 (defn honor!
   "Copies original assignments, then applies overrides."
   [_dispatch [sent changes]]
   (when-let [live (live-statsig)]
-    (when-let [original (or (bootstrap-statsig) sent)]
+    (when-let [original (or sent
+                            (.-__pezPageChoicesWire js/window)
+                            (bootstrap-statsig))]
       (copy-assignments! original live))
     (when (seq changes)
       (apply-changes! live changes))))
@@ -548,10 +661,21 @@
     (.call original js/JSON text reviver)))
 
 (defn with-saved-overrides
-  "Applies saved overrides to parsed bootstrap payload."
+  "Remembers the wire payload, then applies saved overrides."
   [dispatch value]
-  (when-let [statsig (when (some? value) (.-statsigPayload value))]
-    (apply-changes! statsig (read-changes))
+  (when-let [payload (or (.-statsigPayload value)
+                         (when (and (some? value)
+                                    (.-feature_gates value)
+                                    (or (.-dynamic_configs value)
+                                        (.-layer_configs value)))
+                           value))]
+    (let [n (reduce + 0 (map #(count (object-entries (aget payload %))) value-buckets))
+          prior (.-__pezPageChoicesWireSize js/window)]
+      (when (or (nil? prior) (> n prior))
+        (set! (.-__pezPageChoicesWire js/window)
+              (.call (original-parse) js/JSON (js/JSON.stringify payload)))
+        (set! (.-__pezPageChoicesWireSize js/window) n)))
+    (apply-changes! payload (read-changes))
     (js/setTimeout #(dispatch [[:page/ax.saw-statsig]]) 0))
   value)
 
@@ -589,13 +713,25 @@
   [values]
   (.call (original-parse) js/JSON (js/JSON.stringify values)))
 
-(defn load-page! [_dispatch [sent]]
-  (let [bootstrap (bootstrap-statsig)
-        snapshot (if bootstrap
-                   nil
-                   (or sent (when-let [live (live-statsig)] (clone-values live))))
-        source (or bootstrap snapshot)]
-    {:page/sent snapshot
+(defn load-page!
+  "Reads the full switch set. Overrides come from localStorage."
+  [_dispatch [sent]]
+  (let [wire (.-__pezPageChoicesWire js/window)
+        source (or wire
+                   (let [live (when-let [values (live-statsig)] (clone-values values))
+                         boot (bootstrap-statsig)
+                         fuller (fn [a b]
+                                  (let [n (fn [payload]
+                                            (reduce + 0
+                                                    (map #(count (object-entries (aget payload %)))
+                                                         value-buckets)))]
+                                    (if (>= (n a) (n b)) a b)))]
+                     (cond
+                       (and live boot) (fuller live boot)
+                       live live
+                       boot boot
+                       :else sent)))]
+    {:page/sent source
      :page/experiments (when source (read-experiments source))
      :page/changes (read-changes)}))
 
