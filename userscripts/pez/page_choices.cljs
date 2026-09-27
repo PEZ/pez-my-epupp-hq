@@ -280,19 +280,16 @@
   (str n " " (if (= 1 n) one many)))
 
 (defn status-line
-  "How many switches are on the page, and how many settings differ."
+  "How many experiments and configs are listed, and how many overrides."
   [ready? experiments changes]
   (if ready?
-    (let [by-kind (group-by :experiment/kind experiments)]
-      (str (counted-label (count (:gate by-kind)) "gate" "gates")
-           ". "
-           (counted-label (count (:config by-kind)) "config" "configs")
-           ". "
-           (counted-label (count (:layer by-kind)) "layer" "layers")
-           ". "
-           (counted-label (change-count changes) "override" "overrides")
-           "."))
-    "Reading the switches on this page."))
+    (str (counted-label (count experiments) "experiment" "experiments")
+         ". "
+         (counted-label (count (mapcat :experiment/settings experiments)) "config" "configs")
+         ". "
+         (counted-label (change-count changes) "override" "overrides")
+         ".")
+    "Reading the experiments on this page."))
 
 (defn field-style []
   {:font-family "inherit"
