@@ -334,6 +334,42 @@
          "Reset"])
       (setting-control override setting)]]))
 
+(def generic-header-stems
+  #{"control" "test" "treatment" "visible" "empty"})
+
+(defn ordered-sections
+  "Sections with the most readable headers first. A bare number sorts last."
+  [by-kind labels]
+  (let [header (fn [experiment]
+                 (str (or (:experiment/title experiment)
+                          (:experiment/group experiment)
+                          (:experiment/id experiment))))
+        stem (fn [title]
+               (-> title
+                   string/trim
+                   string/lower-case
+                   (string/replace #"\s*\u00b7\s*\d+$" "")))
+        rank (fn [experiment]
+               (let [s (stem (header experiment))]
+                 (cond
+                   (re-matches #"\d+" s) 2
+                   (contains? generic-header-stems s) 1
+                   :else 0)))
+        id-number (fn [experiment]
+                    (let [n (js/parseInt (str (:experiment/id experiment)) 10)]
+                      (if (js/Number.isNaN n) 0 n)))
+        order (fn [experiment]
+                (let [r (rank experiment)]
+                  [r (if (= r 2)
+                       (id-number experiment)
+                       (string/lower-case (header experiment)))]))
+        readable (fn [entries]
+                   (count (filter #(zero? (rank %)) entries)))]
+    (->> labels
+         (map (fn [[title kind]]
+                [title (sort-by order (get by-kind kind))]))
+         (sort-by (fn [[_ entries]] (- (readable entries)))))))
+
 (defn panel-header []
   [:div {:style {:display "flex" :align-items "flex-start"
                  :justify-content "space-between" :gap "8px"}}
@@ -395,9 +431,10 @@
                        ^{:key (:experiment/id experiment)}
                        (row experiment))]))]
     [:div {:style {:display "flex" :flex-direction "column" :gap "20px" :margin-top "16px"}}
-     (section "Gates" (:gate by-kind) #(entry-block open-ids changes %))
-     (section "Configs" (:config by-kind) #(entry-block open-ids changes %))
-     (section "Layers" (:layer by-kind) #(entry-block open-ids changes %))]))
+     (for [[title entries] (ordered-sections by-kind [["Configs" :config]
+                                                      ["Layers" :layer]
+                                                      ["Gates" :gate]])]
+       (section title entries #(entry-block open-ids changes %)))]))
 
 (defn text-button [label action]
   [:button {:type "button"

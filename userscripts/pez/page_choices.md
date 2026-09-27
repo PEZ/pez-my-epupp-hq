@@ -8,7 +8,7 @@ The script is [`page_choices.cljs`](page_choices.cljs). It runs at `document-sta
 
 A button sits at the bottom right. It opens the panel.
 
-The list has three sections: **Gates**, **Configs**, and **Layers**. Each row is a header. Everything starts collapsed. Click a header to show that switch's settings, and click it again to hide them. A filter above the list narrows which headers you see. It does not open them.
+The list has three sections: Configs, Layers, and Gates, with whichever section has the most readable headers placed first. Inside a section, a header written in words comes before a stock label such as Control or Test, and a header that is only a number comes last. Each row starts collapsed. Click a header to show that switch's settings, and click it again to hide them. A filter above the list narrows which headers you see. Matching headers stay collapsed until you click them.
 
 The status line counts gates, configs, layers, and overrides. A header with a number in parentheses has overrides saved on it.
 
