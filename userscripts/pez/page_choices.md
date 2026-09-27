@@ -6,7 +6,7 @@ The script is [`page_choices.cljs`](page_choices.cljs). It runs at `document-sta
 
 ## Using the panel
 
-A button sits at the bottom right. It opens the panel.
+A button sits at the bottom right. It opens the panel. Ctrl+F12 shows or hides it. The label under the close icon says `Show/hide with ^F12`.
 
 Every header has a Pin control. Pinned rows are listed first, under **Pinned**, in the order you pinned them. The other sections follow, with whichever section has the most readable headers placed first. Inside a section, a header written in words comes before a stock label such as Control or Test, and a header that is only a number comes last.
 

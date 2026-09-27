@@ -448,13 +448,18 @@
                  :justify-content "space-between" :gap "8px"}}
    [:div {:style {:min-width "0" :flex "1"}}
     (ui/epupp-header :size 22 :title "Switches on this page" :tagline false)]
-   [:button {:type "button" :aria-label "Close"
-             :on {:click [[:panel/ax.close]]}
-             :style {:width "28px" :height "28px" :padding "0" :border "none"
-                     :border-radius "8px" :background "transparent" :color ink
-                     :cursor "pointer" :display "flex" :align-items "center"
-                     :justify-content "center" :flex-shrink "0"}}
-    (close-icon :size 16)]])
+   [:div {:style {:display "flex" :flex-direction "column" :align-items "flex-end"
+                  :gap "2px" :flex-shrink "0"}}
+    [:button {:type "button" :aria-label "Close"
+              :on {:click [[:panel/ax.close]]}
+              :style {:width "28px" :height "28px" :padding "0" :border "none"
+                      :border-radius "8px" :background "transparent" :color ink
+                      :cursor "pointer" :display "flex" :align-items "center"
+                      :justify-content "center"}}
+     (close-icon :size 16)]
+    [:span {:style {:font-size "10px" :line-height "1.2" :color quiet
+                    :white-space "nowrap"}}
+     "Show/hide with ^F12"]]])
 
 (defn entry-block
   "A switch header. Its settings show only after it is opened."
@@ -656,6 +661,9 @@
       :panel/ax.close
       (with-render (assoc state :page/open? false) [])
 
+      :panel/ax.toggle-open
+      (with-render (update state :page/open? not) [])
+
       :setting/ax.commit
       (commit-setting state (first args))
 
@@ -695,10 +703,10 @@
       :page/ax.kick
       (if (:page/started? state)
         {:uf/db state
-         :uf/fxs [[:page/fx.install] [:panel/fx.read]]
+         :uf/fxs [[:panel/fx.keys] [:page/fx.install] [:panel/fx.read]]
          :uf/dxs [[:page/ax.remembered :uf/prev-result]]}
         {:uf/db state
-         :uf/fxs [[:page/fx.install] [:page/fx.probe]]
+         :uf/fxs [[:panel/fx.keys] [:page/fx.install] [:page/fx.probe]]
          :uf/dxs [[:page/ax.probed :uf/prev-result]]})
 
       :page/ax.remembered
@@ -914,11 +922,25 @@
               (js/JSON.stringify (clj->js {:pins (vec pins)
                                            :open (vec open-ids)})))))
 
+(defn install-keys!
+  "Listens for ctrl+F12 and toggles the panel."
+  [dispatch _args]
+  (when-let [previous (.-__pezPageChoicesKeys js/window)]
+    (.removeEventListener js/window "keydown" previous))
+  (let [listener (fn [event]
+                   (when (and (.-ctrlKey event)
+                              (= "F12" (.-key event)))
+                     (.preventDefault event)
+                     (dispatch [[:panel/ax.toggle-open]])))]
+    (set! (.-__pezPageChoicesKeys js/window) listener)
+    (.addEventListener js/window "keydown" listener)))
+
 (def effect-handlers
   {:ui/fx.render render-ui!
    :storage/fx.write write-storage!
    :panel/fx.read read-panel
    :panel/fx.write write-panel!
+   :panel/fx.keys install-keys!
    :page/fx.honor honor!
    :page/fx.load load-page!
    :page/fx.reload reload-page!
