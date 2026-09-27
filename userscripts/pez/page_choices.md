@@ -8,7 +8,9 @@ The script is [`page_choices.cljs`](page_choices.cljs). It runs at `document-sta
 
 A button sits at the bottom right. It opens the panel.
 
-The list has three sections: Configs, Layers, and Gates, with whichever section has the most readable headers placed first. Inside a section, a header written in words comes before a stock label such as Control or Test, and a header that is only a number comes last. Each row starts collapsed. Click a header to show that switch's settings, and click it again to hide them. A filter above the list narrows which headers you see. Matching headers stay collapsed until you click them.
+Every header has a Pin control. Pinned rows are listed first, under **Pinned**, in the order you pinned them. The other sections follow, with whichever section has the most readable headers placed first. Inside a section, a header written in words comes before a stock label such as Control or Test, and a header that is only a number comes last.
+
+Each row starts collapsed unless you had opened it before. Click a header to show that switch's settings, and click it again to hide them. A filter above the list narrows which headers you see. Matching headers stay collapsed until you click them.
 
 The status line counts gates, configs, layers, and overrides. A header with a number in parentheses has overrides saved on it.
 
@@ -30,12 +32,15 @@ A setting is stored when it differs from the value the page sent. Set it back to
 
 On read, keys whose names start with `__` are ignored, so stray metadata is not treated as a setting.
 
-These stay in the page atom and are gone on reload:
+Pins and which headers are open are saved separately, under `pez.page-choices.panel`, for this site:
 
-- the switch list
-- the filter text
-- which headers are open (this starts empty)
-- the original payload used to restore values before overrides are painted on again
+```json
+{ "pins": ["1009060764"], "open": ["1009060764"] }
+```
+
+`pins` is the gate ids you pinned, newest first. `open` is every header you have expanded. Both are restored when the panel loads. The filter text is not saved.
+
+The switch list and the original payload used to restore values before overrides are applied stay in the page atom. They are gone when the page reloads, and the list is read again.
 
 ## Where the list comes from
 

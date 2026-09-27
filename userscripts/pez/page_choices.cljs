@@ -12,6 +12,8 @@
             [replicant.dom :as r]))
 
 (def storage-key "pez.page-choices")
+(def panel-storage-key "pez.page-choices.panel")
+
 (def panel-id "pez-page-choices")
 
 (def ink "rgb(13, 13, 13)")
@@ -29,7 +31,8 @@
                        :page/saw-statsig? false
                        :page/watch nil
                        :page/query ""
-                       :page/open-ids #{}}))
+                       :page/open-ids #{}
+                       :page/pins []}))
 
 (defn close-icon
   "Codicon close mark, the same one Epupp uses."
@@ -385,19 +388,30 @@
 
 (defn entry-block
   "A switch header. Its settings show only after it is opened."
-  [open-ids changes {:experiment/keys [id title settings] :as experiment}]
+  [open-ids pins changes {:experiment/keys [id title settings] :as experiment}]
   (let [open? (contains? open-ids id)
+        pinned? (some #(= % id) pins)
         n (count (get changes id))]
     [:section {:style {:display "flex" :flex-direction "column" :gap "8px"}}
-     [:button {:type "button"
-               :aria-expanded open?
-               :on {:click [[:page/ax.toggle id]]}
-               :style {:margin "0" :padding "0" :border "none" :background "transparent"
-                       :font-family page-face :font-size "16px" :font-weight "600"
-                       :line-height "1.3" :color ink :text-align "left" :cursor "pointer"}}
-      (str (if open? "\u25be " "\u25b8 ") title)
-      (when (pos? n)
-        (str " (" n ")"))]
+     [:div {:style {:display "flex" :align-items "flex-start" :gap "8px"}}
+      [:button {:type "button"
+                :aria-pressed (boolean pinned?)
+                :aria-label (if pinned? "Unpin" "Pin")
+                :on {:click [[:page/ax.pin id]]}
+                :style {:flex-shrink "0" :margin "0" :padding "0" :border "none"
+                        :background "transparent" :font "inherit" :font-size "12px"
+                        :color quiet :cursor "pointer" :text-decoration "underline"
+                        :text-underline-offset "2px"}}
+       (if pinned? "Unpin" "Pin")]
+      [:button {:type "button"
+                :aria-expanded open?
+                :on {:click [[:page/ax.toggle id]]}
+                :style {:margin "0" :padding "0" :border "none" :background "transparent"
+                        :font-family page-face :font-size "16px" :font-weight "600"
+                        :line-height "1.3" :color ink :text-align "left" :cursor "pointer"}}
+       (str (if open? "\u25be " "\u25b8 ") title)
+       (when (pos? n)
+         (str " (" n ")"))]]
      (when (and open? (seq settings))
        [:div {:style {:display "flex" :flex-direction "column" :gap "8px"}}
         (for [{:setting/keys [param] :as setting} settings]
@@ -405,8 +419,8 @@
           (setting-row changes experiment setting))])]))
 
 (defn experiment-list
-  "Gates, configs, and layers that match the filter."
-  [{:page/keys [query open-ids]} experiments changes]
+  "Pinned gates first, then the other switches that match the filter."
+  [{:page/keys [query open-ids pins]} experiments changes]
   (let [q (string/lower-case (string/trim (or query "")))
         blank? (= "" q)
         hit? (fn [text]
@@ -419,7 +433,13 @@
                                   (hit? (:setting/label %)))
                              settings)))
         shown (filter matches? experiments)
-        by-kind (group-by :experiment/kind shown)
+        pin-set (set pins)
+        pinned (keep (fn [id]
+                       (some #(when (= id (:experiment/id %)) %)
+                             shown))
+                     pins)
+        by-kind (group-by :experiment/kind
+                          (remove #(contains? pin-set (:experiment/id %)) shown))
         section (fn [title entries row]
                   (when (seq entries)
                     [:section {:style {:display "flex" :flex-direction "column" :gap "12px"}}
@@ -429,12 +449,14 @@
                       (str title " (" (count entries) ")")]
                      (for [experiment entries]
                        ^{:key (:experiment/id experiment)}
-                       (row experiment))]))]
+                       (row experiment))]))
+        row #(entry-block open-ids pins changes %)]
     [:div {:style {:display "flex" :flex-direction "column" :gap "20px" :margin-top "16px"}}
+     (section "Pinned" pinned row)
      (for [[title entries] (ordered-sections by-kind [["Configs" :config]
                                                       ["Layers" :layer]
                                                       ["Gates" :gate]])]
-       (section title entries #(entry-block open-ids changes %)))]))
+       (section title entries row))]))
 
 (defn text-button [label action]
   [:button {:type "button"
@@ -554,6 +576,13 @@
     (when-not (js/Number.isNaN parsed)
       {:uf/dxs [[:setting/ax.commit (assoc override :setting/next parsed)]]})))
 
+(defn toggle-pin
+  "Adds a gate id at the front, or removes it."
+  [pins id]
+  (if (some #(= % id) pins)
+    (filterv #(not= % id) pins)
+    (into [id] pins)))
+
 (defn handle-action
   "Decides the next state and which effects should run."
   [state _uf-data action]
@@ -580,30 +609,38 @@
       {:uf/fxs [[:page/fx.reload]]}
 
       :page/ax.loaded
-      (let [{:page/keys [sent experiments changes]} (first args)]
+      (let [{:page/keys [sent experiments changes pins open-ids]} (first args)
+            first-load? (not (:page/ready? state))]
         (when (and (seq experiments)
-                   (or (not (:page/ready? state))
+                   (or first-load?
                        (> (count experiments) (count (:page/experiments state)))))
-          (with-render (assoc state
-                              :page/ready? true
-                              :page/open? (if (:page/ready? state)
-                                            (:page/open? state)
-                                            true)
-                              :page/started? true
-                              :page/saw-statsig? true
-                              :page/watch nil
-                              :page/sent sent
-                              :page/experiments experiments
-                              :page/changes (or changes {}))
+          (with-render (cond-> (assoc state
+                                      :page/ready? true
+                                      :page/open? (if (:page/ready? state)
+                                                    (:page/open? state)
+                                                    true)
+                                      :page/started? true
+                                      :page/saw-statsig? true
+                                      :page/watch nil
+                                      :page/sent sent
+                                      :page/experiments experiments
+                                      :page/changes (or changes {}))
+                         first-load? (assoc :page/pins (or pins [])
+                                            :page/open-ids (or open-ids #{})))
                        [[:page/fx.clear-watch (:page/watch state)]
                         [:page/fx.honor sent changes]])))
 
       :page/ax.kick
       (if (:page/started? state)
-        (with-render (assoc state :page/open? true) [[:page/fx.install]])
+        {:uf/db state
+         :uf/fxs [[:page/fx.install] [:panel/fx.read]]
+         :uf/dxs [[:page/ax.remembered :uf/prev-result]]}
         {:uf/db state
          :uf/fxs [[:page/fx.install] [:page/fx.probe]]
          :uf/dxs [[:page/ax.probed :uf/prev-result]]})
+
+      :page/ax.remembered
+      (with-render (merge state (first args) {:page/open? true}) [])
 
       :page/ax.saw-statsig
       (let [db (assoc state :page/saw-statsig? true)]
@@ -671,13 +708,17 @@
       (with-render (assoc state :page/query (or (first args) "")) [])
 
       :page/ax.toggle
-      (let [id (first args)
-            open (:page/open-ids state #{})]
-        (with-render (assoc state :page/open-ids
-                            (if (contains? open id)
-                              (disj open id)
-                              (conj open id)))
-                     []))
+      (let [open (:page/open-ids state #{})
+            open (if (contains? open (first args))
+                   (disj open (first args))
+                   (conj open (first args)))
+            db (assoc state :page/open-ids open)]
+        (with-render db [[:panel/fx.write (or (:page/pins db) []) open]]))
+
+      :page/ax.pin
+      (let [pins (toggle-pin (or (:page/pins state) []) (first args))
+            db (assoc state :page/pins pins)]
+        (with-render db [[:panel/fx.write pins (:page/open-ids db)]]))
 
       :uf/unhandled-ax)))
 
@@ -750,6 +791,16 @@
   [values]
   (.call (original-parse) js/JSON (js/JSON.stringify values)))
 
+(defn read-panel
+  "Pins and open headers saved for this site."
+  []
+  (if-let [raw (.getItem js/localStorage panel-storage-key)]
+    (let [data (js->clj (js/JSON.parse raw))]
+      {:page/pins (vec (get data "pins"))
+       :page/open-ids (set (get data "open"))})
+    {:page/pins []
+     :page/open-ids #{}}))
+
 (defn load-page!
   "Reads the full switch set. Overrides come from localStorage."
   [_dispatch [sent]]
@@ -768,9 +819,10 @@
                        live live
                        boot boot
                        :else sent)))]
-    {:page/sent source
-     :page/experiments (when source (read-experiments source))
-     :page/changes (read-changes)}))
+    (merge {:page/sent source
+            :page/experiments (when source (read-experiments source))
+            :page/changes (read-changes)}
+           (read-panel))))
 
 (defn probe! [_dispatch _args]
   {:dom/body? (boolean js/document.body)
@@ -791,9 +843,20 @@
     (js/setTimeout #(dispatch [[:page/ax.expire timer]]) 90000)
     timer))
 
+(defn write-panel!
+  "Saves pins and which headers are open."
+  [_dispatch [pins open-ids]]
+  (if (and (empty? pins) (empty? open-ids))
+    (.removeItem js/localStorage panel-storage-key)
+    (.setItem js/localStorage panel-storage-key
+              (js/JSON.stringify (clj->js {:pins (vec pins)
+                                           :open (vec open-ids)})))))
+
 (def effect-handlers
   {:ui/fx.render render-ui!
    :storage/fx.write write-storage!
+   :panel/fx.read read-panel
+   :panel/fx.write write-panel!
    :page/fx.honor honor!
    :page/fx.load load-page!
    :page/fx.reload reload-page!
