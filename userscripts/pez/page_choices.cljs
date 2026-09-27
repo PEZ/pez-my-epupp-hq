@@ -274,21 +274,54 @@
     (copy-config-bucket! (aget from bucket) (aget to bucket)))
   to)
 
+(defn counted-ratio
+  "Joins a shown count, its total, and the word for the total."
+  [n total one many]
+  (str n "/" total " " (if (= 1 total) one many)))
+
 (defn counted-label
   "Joins a count with its singular or plural word."
   [n one many]
   (str n " " (if (= 1 n) one many)))
 
+(defn filter-text
+  "Lower-case trimmed filter text."
+  [query]
+  (string/lower-case (string/trim (or query ""))))
+
+(defn experiment-matches?
+  "True when the filter is empty or hits this experiment."
+  [q {:experiment/keys [id group settings]}]
+  (or (= "" q)
+      (string/includes? (string/lower-case (str group)) q)
+      (string/includes? (string/lower-case (str id)) q)
+      (some (fn [{:setting/keys [param label]}]
+              (or (string/includes? (string/lower-case (str param)) q)
+                  (string/includes? (string/lower-case (str label)) q)))
+            settings)))
+
 (defn status-line
   "How many experiments and configs are listed, and how many overrides."
-  [ready? experiments changes]
+  [ready? experiments changes query]
   (if ready?
-    (str (counted-label (count experiments) "experiment" "experiments")
-         ". "
-         (counted-label (count (mapcat :experiment/settings experiments)) "config" "configs")
-         ". "
-         (counted-label (change-count changes) "override" "overrides")
-         ".")
+    (let [q (filter-text query)
+          shown (if (= "" q)
+                   experiments
+                   (filter #(experiment-matches? q %) experiments))
+          configs (fn [items]
+                    (count (mapcat :experiment/settings items)))
+          overrides (fn [items]
+                      (reduce + 0 (map #(count (get changes (:experiment/id %))) items)))
+          part (fn [n total one many]
+                 (if (= "" q)
+                   (counted-label n one many)
+                   (counted-ratio n total one many)))]
+      (str (part (count shown) (count experiments) "experiment" "experiments")
+           ". "
+           (part (configs shown) (configs experiments) "config" "configs")
+           ". "
+           (part (overrides shown) (overrides experiments) "override" "overrides")
+           "."))
     "Reading the experiments on this page."))
 
 (defn field-style []
@@ -460,18 +493,8 @@
 (defn experiment-list
   "Pinned gates first, then the other switches that match the filter."
   [{:page/keys [query open-ids pins]} experiments changes]
-  (let [q (string/lower-case (string/trim (or query "")))
-        blank? (= "" q)
-        hit? (fn [text]
-               (string/includes? (string/lower-case (str text)) q))
-        matches? (fn [{:experiment/keys [id group settings]}]
-                   (or blank?
-                       (hit? group)
-                       (hit? id)
-                       (some #(or (hit? (:setting/param %))
-                                  (hit? (:setting/label %)))
-                             settings)))
-        shown (filter matches? experiments)
+  (let [q (filter-text query)
+        shown (filter #(experiment-matches? q %) experiments)
         pin-set (set pins)
         pinned (keep (fn [id]
                        (some #(when (= id (:experiment/id %)) %)
@@ -531,7 +554,7 @@
                  :border-bottom (str "1px solid " line)}}
    (panel-header)
    [:p {:style {:margin "12px 0 0" :color quiet}}
-    (status-line ready? experiments changes)]
+    (status-line ready? experiments changes query)]
    (when ready?
      (query-field query))])
 

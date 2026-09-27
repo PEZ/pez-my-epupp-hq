@@ -12,7 +12,7 @@ Every header has a Pin control. Pinned rows are listed first, under **Pinned**, 
 
 Each row starts collapsed unless you had opened it before. Click a header to show that switch's settings, and click it again to hide them. A filter above the list narrows which headers you see. Matching headers stay collapsed until you click them.
 
-Each header is an experiment. The status line counts experiments, configs, and overrides. A gate counts as one experiment and one config, because its only setting is the on/off switch. A config or a layer counts as one experiment, and each of its settings counts as one config. An experiment with a number in parentheses has overrides saved on it.
+Each header is an experiment. The status line counts experiments, configs, and overrides. While the filter has text, each count is shown as matching/total. A gate counts as one experiment and one config, because its only setting is the on/off switch. A config or a layer counts as one experiment, and each of its settings counts as one config. An experiment with a number in parentheses has overrides saved on it.
 
 Change a setting and it is written into the page's Statsig data straight away. If the page has already read the old value, use **Reload**. **Put the page's switches back** clears every override.
 
