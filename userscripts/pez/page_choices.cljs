@@ -146,19 +146,19 @@
         (object-entries (aget statsig bucket))))
 
 (defn read-experiments
-  "Reads gates, configs, and layers from a Statsig values object."
+  "Reads gates, configs, and layers that have settings."
   [statsig]
   (when statsig
-    (vec
-     (concat
-      (sort-by :experiment/id
-               (mapv (fn [[k obj]] (read-gate k obj))
-                     (object-entries (.-feature_gates statsig))))
-      (with-titles
-        (vec
-         (sort-by (juxt :experiment/group :experiment/id)
-                  (concat (read-named :config statsig "dynamic_configs")
-                          (read-named :layer statsig "layer_configs")))))))))
+    (filterv #(seq (:experiment/settings %))
+             (concat
+              (sort-by :experiment/id
+                       (mapv (fn [[k obj]] (read-gate k obj))
+                             (object-entries (.-feature_gates statsig))))
+              (with-titles
+                (vec
+                 (sort-by (juxt :experiment/group :experiment/id)
+                          (concat (read-named :config statsig "dynamic_configs")
+                                  (read-named :layer statsig "layer_configs")))))))))
 
 (defn read-changes
   "Returns saved setting overrides."
@@ -328,6 +328,13 @@
    :setting/param param
    :setting/site site})
 
+(defn locked-text
+  "JSON text for a value the panel does not edit."
+  [value]
+  (if (nil? value)
+    ""
+    (js/JSON.stringify value)))
+
 (defn setting-control
   [override {:setting/keys [label kind]}]
   (let [current (shown-value override)]
@@ -341,7 +348,16 @@
       :number [:input {:type "number" :value (str current) :aria-label label
                        :style (field-style)
                        :on {:change [[:setting/ax.commit-number (assoc override :setting/raw :event/target.value)]]}}]
-      [:span {:style {:color quiet :font-size "13px"}} "Left as sent"])))
+      (let [text (locked-text current)]
+        [:input {:type "text"
+                 :disabled true
+                 :value text
+                 :title text
+                 :aria-label label
+                 :style (assoc (field-style)
+                               :color quiet
+                               :background "#f6f6f6"
+                               :cursor "default")}]))))
 
 (defn setting-row
   [changes experiment {:setting/keys [label] :as setting}]

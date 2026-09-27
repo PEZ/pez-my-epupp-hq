@@ -16,7 +16,7 @@ The status line counts gates, configs, layers, and overrides. A header with a nu
 
 Change a setting and it is written into the page's Statsig data straight away. If the page has already read the old value, use **Reload**. **Put the page's switches back** clears every override.
 
-A value that is an object or a list is shown as "Left as sent". The panel does not edit those.
+A value that is an object or a list is shown in a disabled field, as JSON. The panel does not edit those. Headers with no settings are left out of the list.
 
 ## What is saved
 
@@ -104,4 +104,4 @@ Until Statsig shows up, the script polls every 200ms and gives up after 90 secon
 
 A layer is a shared bag of settings. The header is the group this visit landed in, which is the name of that arm. The settings under it are every key in the bag. Many of those keys belong to the bag's current values. The ones this arm owns are `explicit_parameters` on the Statsig entry. The panel lists the whole bag, because that is what the page is reading.
 
-Configs with no group name are still listed. Their header is the id, which is usually a number.
+Configs with no group name are still listed when they have settings. Their header is the id, which is usually a number.
