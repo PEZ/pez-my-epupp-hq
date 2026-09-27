@@ -410,38 +410,29 @@
 (def generic-header-stems
   #{"control" "test" "treatment" "visible" "empty"})
 
-(defn ordered-sections
-  "Sections with the most readable headers first. A bare number sorts last."
-  [by-kind labels]
-  (let [header (fn [experiment]
-                 (str (or (:experiment/title experiment)
-                          (:experiment/group experiment)
-                          (:experiment/id experiment))))
-        stem (fn [title]
-               (-> title
-                   string/trim
-                   string/lower-case
-                   (string/replace #"\s*\u00b7\s*\d+$" "")))
-        rank (fn [experiment]
-               (let [s (stem (header experiment))]
-                 (cond
-                   (re-matches #"\d+" s) 2
-                   (contains? generic-header-stems s) 1
-                   :else 0)))
-        id-number (fn [experiment]
-                    (let [n (js/parseInt (str (:experiment/id experiment)) 10)]
-                      (if (js/Number.isNaN n) 0 n)))
-        order (fn [experiment]
-                (let [r (rank experiment)]
-                  [r (if (= r 2)
-                       (id-number experiment)
-                       (string/lower-case (header experiment)))]))
-        readable (fn [entries]
-                   (count (filter #(zero? (rank %)) entries)))]
-    (->> labels
-         (map (fn [[title kind]]
-                [title (sort-by order (get by-kind kind))]))
-         (sort-by (fn [[_ entries]] (- (readable entries)))))))
+(defn header-order
+  "Readable names, then stock labels, then bare numbers."
+  [experiment]
+  (let [title (str (or (:experiment/title experiment)
+                       (:experiment/group experiment)
+                       (:experiment/id experiment)))
+        stem (-> title
+                 string/trim
+                 string/lower-case
+                 (string/replace #"\s*\u00b7\s*\d+$" ""))
+        rank (cond
+               (re-matches #"\d+" stem) 2
+               (contains? generic-header-stems stem) 1
+               :else 0)
+        n (js/parseInt (str (:experiment/id experiment)) 10)]
+    [rank (if (= rank 2)
+            (if (js/Number.isNaN n) 0 n)
+            (string/lower-case title))]))
+
+(defn sort-by-sense
+  "Orders experiments by how readable the header is."
+  [experiments]
+  (sort-by header-order experiments))
 
 (defn panel-header []
   [:div {:style {:display "flex" :align-items "flex-start"
@@ -496,7 +487,7 @@
           (setting-row changes experiment setting))])]))
 
 (defn experiment-list
-  "Pinned gates first, then the other switches that match the filter."
+  "Pinned experiments first, then the rest that match the filter."
   [{:page/keys [query open-ids pins]} experiments changes]
   (let [q (filter-text query)
         shown (filter #(experiment-matches? q %) experiments)
@@ -505,8 +496,7 @@
                        (some #(when (= id (:experiment/id %)) %)
                              shown))
                      pins)
-        by-kind (group-by :experiment/kind
-                          (remove #(contains? pin-set (:experiment/id %)) shown))
+        unpinned (sort-by-sense (remove #(contains? pin-set (:experiment/id %)) shown))
         section (fn [title entries row]
                   (when (seq entries)
                     [:section {:style {:display "flex" :flex-direction "column" :gap "12px"}}
@@ -520,10 +510,7 @@
         row #(entry-block open-ids pins changes %)]
     [:div {:style {:display "flex" :flex-direction "column" :gap "20px" :margin-top "16px"}}
      (section "Pinned" pinned row)
-     (for [[title entries] (ordered-sections by-kind [["Configs" :config]
-                                                      ["Layers" :layer]
-                                                      ["Gates" :gate]])]
-       (section title entries row))]))
+     (section "Unpinned" unpinned row)]))
 
 (defn text-button [label action]
   [:button {:type "button"

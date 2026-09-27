@@ -8,7 +8,7 @@ The script is [`page_choices.cljs`](page_choices.cljs). It runs at `document-sta
 
 A button sits at the bottom right. It opens the panel. Ctrl+F12 shows or hides it. The label under the close icon says `Show/hide with ^F12`.
 
-Every header has a Pin control. Pinned rows are listed first, under **Pinned**, in the order you pinned them. The other sections follow, with whichever section has the most readable headers placed first. Inside a section, a header written in words comes before a stock label such as Control or Test, and a header that is only a number comes last.
+Every header has a Pin control. Pinned experiments are listed first, under **Pinned**, in the order you pinned them. The rest are under **Unpinned**. A header written in words comes before a stock label such as Control or Test, and a header that is only a number comes last.
 
 Each row starts collapsed unless you had opened it before. Click a header to show that switch's settings, and click it again to hide them. A filter above the list narrows which headers you see. Matching headers stay collapsed until you click them.
 
