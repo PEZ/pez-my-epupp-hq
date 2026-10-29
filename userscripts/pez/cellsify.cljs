@@ -316,16 +316,21 @@
 (defn- sleep [ms]
   (js/Promise. (fn [resolve] (js/setTimeout resolve ms))))
 
-(defn- ^:async await-app-project
-  "Resolves when the open project is the one the app loaded, not the empty project the user content frame starts with."
-  [deadline]
-  (let [project-name (try (-> (await (pull)) :project/meta :project :name)
-                          (catch :default _ nil))]
+(defn- ^:async poll
+  "Resolves with the first truthy result of `(f)`, which may be a promise, checking every `interval-ms`.
+   Rejects with `message` after `deadline`."
+  [f interval-ms message deadline]
+  (let [v (await (f))]
     (cond
-      (and project-name (not= "New Project" project-name)) project-name
-      (> (js/Date.now) deadline) (throw (js/Error. "The app did not load a project into the user content frame"))
-      :else (do (await (sleep 500))
-                (await (await-app-project deadline))))))
+      v v
+      (> (js/Date.now) deadline) (throw (js/Error. message))
+      :else (do (await (sleep interval-ms))
+                (await (poll f interval-ms message deadline))))))
+
+(defn- open-project-name []
+  (-> (pull)
+      (.then #(-> % :project/meta :project :name))
+      (.catch (constantly nil))))
 
 (defn ^:async reload-user-content!
   "Reloads the user content frame, which recovers it after a crash and stops all timers.
@@ -335,7 +340,84 @@
         started (next-message #(= :sheets-updated (-> % :message :fn-id)) 30000)]
     (set! (.-src frame) (.getAttribute frame "src"))
     (await started)
-    (await (await-app-project (+ (js/Date.now) 30000)))))
+    ;; The user content frame starts with an empty "New Project" until the app sends its project
+    (await (poll #(.then (open-project-name) (fn [n] (when (not= "New Project" n) n)))
+                 500
+                 "The app did not load a project into the user content frame"
+                 (+ (js/Date.now) 30000)))))
+
+;; The app's projects
+
+(defn- button-labeled [label]
+  (->> (js/document.querySelectorAll "button")
+       (filter #(= label (str/trim (.-textContent %))))
+       first))
+
+(defn- type-into!
+  "Types `text` into `input` so that the app sees the change."
+  [input text]
+  (.call (.-set (js/Object.getOwnPropertyDescriptor (.-prototype js/HTMLInputElement) "value")) input text)
+  (.dispatchEvent input (js/Event. "input" #js {:bubbles true})))
+
+(defn ^:async create-project!
+  "Creates a project named `project-name` in the app, the way its New Project button does, and makes it the app's
+   current project. Resolves when the user content frame has started it."
+  [project-name]
+  (.click (button-labeled "New Project"))
+  (let [input (await (poll #(js/document.querySelector "input[placeholder='Project Name']")
+                           100 "The app did not open its New Project dialog" (+ (js/Date.now) 5000)))]
+    (type-into! input project-name)
+    (.click (button-labeled "Create"))
+    (await (poll #(.then (open-project-name) (fn [n] (= project-name n)))
+                 200 (str "The user content frame did not start " project-name) (+ (js/Date.now) 10000)))))
+
+(defn- save-button []
+  (some-> (js/document.querySelector ".footer-button use[href*='floppy-disk']")
+          (.closest ".footer-button")))
+
+(defn- app-current-project-name
+  "Returns the name of the app's current project, the card in its project list that lists sheets."
+  []
+  (some->> (js/document.querySelectorAll ".project-card")
+           (filter #(str/includes? (.-textContent %) "+ sheet"))
+           first
+           (#(.querySelector % ".project-card-heading"))
+           .-textContent
+           str/trim))
+
+(defn- close-save-notice!
+  "Closes the notice about browser storage that the app shows after every save."
+  []
+  (when-let [close (button-labeled "Close")]
+    (when (str/includes? (.. close -parentElement -textContent) "Be aware")
+      (.click close))))
+
+(defn ^:async save!
+  "Saves the open project into the app's current project by clicking the app's save button. Both must be named
+   `project-name`, or it throws without saving. Resolves when the app has stored it, so it survives a page reload."
+  [project-name]
+  (let [open-name (await (open-project-name))
+        current-name (app-current-project-name)]
+    (when-not (= project-name open-name current-name)
+      (throw (js/Error. (str "Not saving " project-name ": the user content frame has " open-name
+                             " open and the app's current project is " current-name))))
+    (let [project-text (next-message #(= :save-project-string (-> % :message :fn-id)) 10000)]
+      (.click (save-button))
+      (await project-text)
+      ;; The app colours the save button while it saves
+      (await (poll #(= "" (.. (save-button) -style -color))
+                   100 "The app did not finish saving" (+ (js/Date.now) 10000)))
+      (close-save-notice!)
+      project-name)))
+
+(defn ^:async push-new!
+  "Creates a project in the app named after `project`, pushes `project` into it, and saves it there."
+  [project]
+  (let [project-name (-> project :project/meta :project :name)]
+    (await (reload-user-content!))
+    (await (create-project! project-name))
+    (await (push! project))
+    (await (save! project-name))))
 
 (comment
   (-> (pull) (.then #(-> % :project/meta :project)))
@@ -345,9 +427,11 @@
       (set-input (coord 1 :v [[1 1]]) (formula '(+ 1 2 3)))
       (name-cell "six" (coord 1 :v [[1 1]]))
       add-repl-cells
-      push!)
+      push-new!)
 
   (evaluate '(* six 7))
+
+  (save! "hello")
 
   (look)
 

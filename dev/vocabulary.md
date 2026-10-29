@@ -32,6 +32,9 @@ Cellsify is a Scittle spreadsheet at cellsify.com. `pez.cellsify` (`userscripts/
 
 - **the app** — the top frame at `cellsify.com/app`: menus and project navigation. Epupp and `pez.cellsify` run here.
 - **user content frame** — the cross-origin frame on `cellsify-usercontent.com`. The grid lives there and formulas are evaluated there. The app and the user content frame talk over `postMessage`.
+- **project list** — the app's list of saved projects, one card per project.
+- **current project** — the project the app saves into, a name and an id the app keeps. It is the expanded card in the project list.
+- **open project** — the project the user content frame has open. Push replaces it. It reaches the app's current project only when saved.
 - **project** — what Cellsify opens, imports, and exports. In `pez.cellsify` a project is data: `:project/version`, `:project/meta`, `:project/inputs`.
 - **sheet** — a top-level grid in a project, with a sheet id, a name, and a size in rows and columns.
 - **var sheet** — sheet 0, named `var-sheet`. Cellsify keeps it hidden in every project.
@@ -56,7 +59,10 @@ Cellsify is a Scittle spreadsheet at cellsify.com. `pez.cellsify` (`userscripts/
 - **wire** — the library's messages in flight: pending replies, watchers, and the local server handler.
 - **request** — sending a message and getting a promise of the reply.
 - **pull** — getting the open project from Cellsify as data.
-- **push** — importing a project into Cellsify, replacing the open project.
+- **push** — importing a project into the user content frame, replacing the open project. The app's project list does not see it, and a page reload loses it until it is saved.
+- **create project** — making a new project in the app, the way its New Project button does (`:create-new-project`). The new project becomes the app's current project. `new-project` is different: it returns an empty project as data.
+- **save** — clicking the app's save button, which stores the open project into the app's current project (`:save-project`). `save!` refuses unless both have the name it is given.
+- **push new** — reload user content, create project, push, and save in one step, so the pushed project gets its own entry in the app's project list.
 - **look** — a screenshot of the user content frame.
 - **serve** — answering `:api-server` actions with a **local server handler**, a function of the request.
 - **reload user content** — reloading the user content frame. It stops all timers and recovers from a crash, then waits for the app to load its project again.

@@ -88,6 +88,14 @@
 (def r-pentomino #{[51 50] [52 50] [50 51] [51 51] [51 52]})
 
 (comment
+  ;; Creates game-of-life in the app's project list, pushes the game there, and saves it
+  (c/push-new! (c/add-repl-cells (life-project {:board (into glider r-pentomino)
+                                                :running? false
+                                                :size 100
+                                                :interval 150
+                                                :cell-px 7})))
+  (c/save! "game-of-life")
+
   ;; Reloading the user content frame stops timers left by earlier pushes
   (-> (c/reload-user-content!)
       (.then #(c/push! (c/add-repl-cells (life-project {:board (into glider r-pentomino)
