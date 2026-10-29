@@ -1,6 +1,6 @@
 ---
 name: cellsify
-description: "Build, drive, and verify Cellsify projects from the editor with the pez.cellsify userscript library: projects as data, push and pull, evaluate through REPL cells, look at the user content frame. Use when: working with Cellsify, cellsify.com, pez.cellsify or userscripts/pez/cellsify.cljs, building or changing a Cellsify project, sheet, cell, formula, named ref, control (grid, button, timer, canvas) or action, evaluating forms inside Cellsify, cellsify_life.cljs, reverse engineering Cellsify messages or export text, or updating the library in Epupp."
+description: "Build, drive, and verify Cellsify projects from the editor with the pez.cellsify userscript library: projects as data, push and pull, save into the app's project list, evaluate through REPL cells, look at the user content frame. Use when: working with Cellsify, cellsify.com, pez.cellsify or userscripts/pez/cellsify.cljs, building or changing a Cellsify project, sheet, cell, formula, named ref, control (grid, button, timer, canvas) or action, evaluating forms inside Cellsify, cellsify_life.cljs, reverse engineering Cellsify messages or export text, or updating the library in Epupp."
 ---
 
 # Cellsify
@@ -11,7 +11,7 @@ Cellsify is a Scittle spreadsheet at cellsify.com. `pez.cellsify` is an Epupp us
 
 Two frames, one project.
 
-- **The app** is the top frame at `cellsify.com/app`. Epupp, the REPL, and `pez.cellsify` live here.
+- **The app** is the top frame at `cellsify.com/app`. Epupp, the REPL, and `pez.cellsify` live here. The app keeps the project list and saves the open project into its current project only when asked.
 - **The user content frame** is a cross-origin frame on `cellsify-usercontent.com`. The grid lives there and formulas, timers, and actions run there. Epupp cannot run inside it, and agents cannot click in it.
 - The two talk over `postMessage`. `pez.cellsify` speaks the same messages the app does, so from the REPL you can import a project, export it, reload the frame, and answer `:api-server` actions.
 - A project is data: `:project/version`, `:project/meta`, and `:project/inputs`, a map from coord to input. Cellsify's export text is its serialization.
@@ -46,7 +46,10 @@ Every operation returns a promise of Clojure data. Return the promise from the e
    - `evaluate` returns the value of a form inside Cellsify, named refs included: `(evaluate '[running generation (count board)])`. Errors reject with Cellsify's own message.
    - `pull` returns the open project as data, including state that actions wrote. Actions write formula inputs, so a counter reads back as `"=13"`; `input-form` turns an input back into data.
    - `look` returns a screenshot of the user content frame as an image data URL.
-4. **Iterate** by changing the builder and repeating step 2.
+4. **Iterate** by changing the builder and repeating step 2. A push lives only in the user content frame: the project list does not see it, and a page reload brings back what the app last saved.
+5. **Keep it.** `(push-new! project)` reloads user content, creates a project in the app named after the project, pushes, and saves, so the project gets its own entry in the project list. `(save! "name")` saves the open project again when it and the app's current project both have that name.
+
+`push!` uses the same `:import-project` message as the app's Import Project, which the app's welcome page lists as a paid-subscription feature.
 
 To change a project that already holds state worth keeping, pull, modify the data, and push it back. `push!` replaces whatever project is open, so ask PEZ before replacing a project you did not push yourself.
 
@@ -55,6 +58,7 @@ Clicks and pointer events need PEZ: ask him to click, then check the result with
 ## What holds
 
 - **Reload before every push.** Timers outlive their project on import and keep acting on the new one.
+- **Saves go into a named current project.** After a reload of user content, and at page load, the app's current project is "welcome", a draft without an id, and saving a draft creates a new project every time. `save!` refuses unless the open project and the current project both have the name you give it. To save a saved project again after a reload, open it from the project list first. The library has no function for that yet.
 - **The open project carries REPL cells before you evaluate.** `evaluate` rejects with "No REPL cells answered" when they are missing or their timer has died; reload and push a project built with `add-repl-cells`. The REPL cells take X9Y10 and X10Y10 of the var sheet, so keep project cells off those two.
 - **`evaluate` reads.** It answers one form per tick (100 ms). Forms travel as printed text, so they hold only readable data. State changes go through actions or `push!`.
 - **Cells that other cells read stay error-free.** A formula reading an erroring cell errors too, and a timer that reads one stops for good. Recover with reload and push.
