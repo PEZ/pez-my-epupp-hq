@@ -332,17 +332,21 @@ result
 ```
 my-epupp-hq/
   docs/
-    epupp-README.md       # Synced from the Epupp repository
-    epupp-repl-fs-sync.md # Also synced from Epupp
+    epupp-README.md        # Synced from the Epupp repository
+    repl-fs-sync.md        # Also synced from Epupp
+    connecting-to-epupp.md # Also synced from Epupp
   userscripts/           # Userscripts with manifests - ready to sync to Epupp (run `bb tasks` in this directory)
     hq/                  # Example namespace folder
       hello_world.cljs
   live-tampers/          # Ad-hoc REPL code (experiments, repeated patterns)
+  dev/
+    vocabulary.md        # Names in use in this workspace
 ```
 
 - `docs/` contains documentation synced from the [Epupp repository](https://github.com/PEZ/epupp) — `bb docs-sync` updates from latest available
 - `userscripts/` holds scripts intended to be synced to Epupp via FS API or panel
 - `live-tampers/` is for REPL-evaluated code - exploratory tampering, utilities, exercises
+- `dev/vocabulary.md` is the language corpus: the Epupp and Cellsify names we use in code, docstrings, and talk. Check it before naming anything new
 
 ## What NOT to Do
 

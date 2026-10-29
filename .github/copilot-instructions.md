@@ -13,9 +13,9 @@ When working in files under `original-my-epupp-hq/`, treat all changes as upstre
 
 When working in `pez-my-epupp-hq/`, this is personal space — be direct, opinionated, and build on accumulated context.
 
-## AGENTS.md Is Disabled
+## This File Replaces AGENTS.md
 
-The workspace setting `chat.useAgentsMdFile: false` means `AGENTS.md` is not loaded as workspace instructions. It exists as part of the template (for dog-fooding) but this `copilot-instructions.md` replaces its role. Do not reference `AGENTS.md` for Epupp knowledge — use `docs/epupp-README.md` and the sections below instead.
+`AGENTS.md` exists as part of the template (for dog-fooding), and this `copilot-instructions.md` replaces its role. Copilot reads this file directly, and the workspace setting `chat.useAgentsMdFile: false` keeps `AGENTS.md` out. Claude Code and Cursor read this file through the root `CLAUDE.md` link. Cursor also loads `AGENTS.md`; where the two differ, this file wins. Do not reference `AGENTS.md` for Epupp knowledge — use `docs/epupp-README.md` and the sections below instead.
 
 ## Epupp Essentials
 
@@ -69,7 +69,11 @@ pez-my-epupp-hq/
     <site>/            # Per-site subdirectory (github/, youtube/, etc.)
       helpers.cljs     # Accumulated helper functions for that site
   snippets/            # Reusable hiccup/code snippets
+  dev/
+    vocabulary.md      # Names in use in this workspace
 ```
+
+`dev/vocabulary.md` is the language corpus: the Epupp and Cellsify names we use in code, docstrings, and talk. Check it before naming anything new.
 
 ### Per-site live-tampers convention
 
