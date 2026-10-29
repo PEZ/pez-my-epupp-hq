@@ -68,7 +68,7 @@ When the parsed value has `statsigPayload`, or is itself a values object with `f
 2. Saved overrides are written onto the object the page receives.
 3. The panel reloads the list if the new payload is larger.
 
-Other JSON is returned unchanged.
+Other JSON is returned unchanged. `null` is left alone: reading a property of it throws, and pages parse `null` often.
 
 ## What happens when you change a setting
 

@@ -107,7 +107,7 @@
 (defn object-entries
   "Pairs of key and value from a JS object."
   [obj]
-  (when obj
+  (when (object? obj)
     (js/Object.entries obj)))
 
 (defn read-gate
@@ -306,8 +306,8 @@
   (if ready?
     (let [q (filter-text query)
           shown (if (= "" q)
-                   experiments
-                   (filter #(experiment-matches? q %) experiments))
+                  experiments
+                  (filter #(experiment-matches? q %) experiments))
           configs (fn [items]
                     (count (mapcat :experiment/settings items)))
           overrides (fn [items]
@@ -684,8 +684,8 @@
                                       :page/changes (or changes {}))
                          first-load? (assoc :page/pins (or pins [])
                                             :page/open-ids (or open-ids #{})))
-                       [[:page/fx.clear-watch (:page/watch state)]
-                        [:page/fx.honor sent changes]])))
+            [[:page/fx.clear-watch (:page/watch state)]
+             [:page/fx.honor sent changes]])))
 
       :page/ax.kick
       (if (:page/started? state)
@@ -798,20 +798,21 @@
 (defn with-saved-overrides
   "Remembers the wire payload, then applies saved overrides."
   [dispatch value]
-  (when-let [payload (or (.-statsigPayload value)
-                         (when (and (some? value)
-                                    (.-feature_gates value)
-                                    (or (.-dynamic_configs value)
-                                        (.-layer_configs value)))
-                           value))]
-    (let [n (reduce + 0 (map #(count (object-entries (aget payload %))) value-buckets))
-          prior (.-__pezPageChoicesWireSize js/window)]
-      (when (or (nil? prior) (> n prior))
-        (set! (.-__pezPageChoicesWire js/window)
-              (.call (original-parse) js/JSON (js/JSON.stringify payload)))
-        (set! (.-__pezPageChoicesWireSize js/window) n)))
-    (apply-changes! payload (read-changes))
-    (js/setTimeout #(dispatch [[:page/ax.saw-statsig]]) 0))
+  (when (object? value)
+    (when-let [payload (or (when (object? (.-statsigPayload value))
+                             (.-statsigPayload value))
+                           (when (and (object? (.-feature_gates value))
+                                      (or (object? (.-dynamic_configs value))
+                                          (object? (.-layer_configs value))))
+                             value))]
+      (let [n (reduce + 0 (map #(count (object-entries (aget payload %))) value-buckets))
+            prior (.-__pezPageChoicesWireSize js/window)]
+        (when (or (nil? prior) (> n prior))
+          (set! (.-__pezPageChoicesWire js/window)
+                (.call (original-parse) js/JSON (js/JSON.stringify payload)))
+          (set! (.-__pezPageChoicesWireSize js/window) n)))
+      (apply-changes! payload (read-changes))
+      (js/setTimeout #(dispatch [[:page/ax.saw-statsig]]) 0)))
   value)
 
 (defn install-rewrite!

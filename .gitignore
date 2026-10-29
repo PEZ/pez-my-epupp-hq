@@ -21,3 +21,4 @@ pom.xml.asc
 .calva/
 !.calva/config.edn
 .tmp
+.mcp.json
